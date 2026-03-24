@@ -6,7 +6,7 @@ A lightweight face detection and recognition system built on Apple's Vision fram
 
 ### Detection
 
-Faces are detected using Apple's `VNDetectFaceLandmarksRequest` (revision 3), which returns bounding boxes and 68+ facial landmark points across ~12 anatomical regions (eyes, eyebrows, nose, lips, face contour, etc.).
+Faces are detected using `VNDetectFaceLandmarksRequest` (revision 3) from Apple's [Vision framework](https://developer.apple.com/documentation/vision) (`Vision.framework`), which returns bounding boxes and 68+ facial landmark points across ~12 anatomical regions (eyes, eyebrows, nose, lips, face contour, etc.).
 
 #### Multi-Scale Tiled Detection
 
