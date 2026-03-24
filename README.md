@@ -1,6 +1,6 @@
-# Vision — Face Detection & Recognition
+# Vision — Face Detection, Recognition & Body Pose
 
-A lightweight face detection and recognition system built on Apple's Vision framework. It uses a custom **pose-robust geometric descriptor** for face recognition — no deep learning required.
+A lightweight face detection, recognition, and body pose estimation system built on Apple's Vision framework. It uses a custom **pose-robust geometric descriptor** for face recognition and **`VNDetectHumanBodyPoseRequest`** for body pose detection — no deep learning training required.
 
 ## How It Works
 
@@ -62,6 +62,10 @@ Recognition uses **Euclidean distance** in the 40-dimensional descriptor space:
 - **Interpretable** — every dimension has a clear geometric meaning
 - **No training phase** — just store descriptors from labeled images
 
+### Body Pose Estimation
+
+Body poses are detected using `VNDetectHumanBodyPoseRequest`, which returns 19 joint keypoints per person (nose, eyes, ears, neck, shoulders, elbows, wrists, hips, root, knees, ankles). Each keypoint includes x/y coordinates and a confidence score. Joints with confidence below 0.1 are excluded from the visualization.
+
 ## Building
 
 Requires macOS with Xcode command-line tools installed.
@@ -121,6 +125,44 @@ Detect and identify faces across a video file. Samples frames at a configurable 
 - Each sampled frame is annotated with bounding boxes and identity labels
 - Timestamped detection summary is printed to stdout
 
+### Body Pose Detection
+
+Detect human body poses and overlay stick figures with colored joint markers and white connecting rods.
+
+```bash
+./vision body photo.jpg pose.png
+```
+
+The output image shows 19 detected joint keypoints connected by a skeleton:
+
+| Joint | Color |
+|---|---|
+| Nose | Red |
+| Eyes | Cyan |
+| Ears | Orange |
+| Shoulders | Green |
+| Neck | Light green |
+| Elbows | Blue |
+| Wrists | Light blue |
+| Hips | Yellow |
+| Root (hip center) | Orange |
+| Knees | Pink |
+| Ankles | Purple |
+
+Joints are connected by white rods forming the skeleton: head, spine, arms, and legs.
+
+### Body Pose Video
+
+Detect body poses across a video file and produce an annotated output video with stick figure overlays.
+
+```bash
+./vision body-video dance.mp4 pose.mp4
+./vision body-video dance.mp4 pose.mp4 --interval 0.5
+```
+
+- Same input format support as `detect-video` (`.mp4`, `.mov`, `.m4v`, etc.)
+- Default sampling interval is 1 second (configurable with `--interval`)
+
 ### Manage Training Data
 
 ```bash
@@ -146,8 +188,10 @@ vision/
   face_detector.h            C interface header (public API)
   face_detector.m            Core implementation (Objective-C)
   face_detector_internal.h   Internal helpers shared across modules
-  video_detector.h           Video detection API header
-  video_detector.m           Video detection implementation (AVFoundation)
+  video_detector.h           Video face detection API header
+  video_detector.m           Video face detection (AVFoundation)
+  body_detector.h            Body pose detection API header
+  body_detector.m            Body pose detection and stick figure drawing
   main.c                     Command-line interface (C)
   Makefile                   Build configuration
 ```
