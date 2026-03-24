@@ -537,21 +537,117 @@ static int extract_gait_descriptor(GaitFrame *frames, int nframes,
 /*  Matching                                                           */
 /* ------------------------------------------------------------------ */
 
+/* Per-feature weights for gait distance.
+ * Speed-dependent features (ranges, stride) are downweighted because
+ * they vary with walking speed and context, not identity.
+ * Stable identity features (means, proportions, symmetry) get full weight. */
+static const float gait_weights[24] = {
+    1.0f, 0.3f,   /*  0: knee mean (stable), 1: knee range (speed-dep) */
+    1.0f, 0.3f,   /*  2: hip mean,           3: hip range              */
+    1.0f, 0.3f,   /*  4: elbow mean,         5: elbow range            */
+    1.0f, 0.3f,   /*  6: shoulder mean,      7: shoulder range         */
+    1.0f, 1.0f,   /*  8: knee sym,           9: hip sym                */
+    1.0f, 1.0f,   /* 10: elbow sym,         11: shoulder sym           */
+    1.0f, 1.0f,   /* 12: upper/lower,       13: shld width             */
+    1.0f, 1.0f,   /* 14: hip width,         15: shld/hip ratio         */
+    0.5f, 0.2f,   /* 16: cadence (mod),     17: stride (very speed-dep)*/
+    1.0f, 1.0f,   /* 18: bounce,            19: sway                   */
+    0.5f, 1.0f,   /* 20: arm swing (mod),   21: lean mean              */
+    1.0f, 0.5f,   /* 22: lean stddev,       23: regularity (mod)       */
+};
+
 static float gait_distance(const float *a, const float *b, int size)
 {
     float sum = 0;
     for (int i = 0; i < size; i++) {
+        float w = (i < 24) ? gait_weights[i] : 1.0f;
         float d = a[i] - b[i];
-        sum += d * d;
+        sum += w * d * d;
     }
     return sqrtf(sum);
 }
 
-static const char *gait_best_match(const float *descriptor, int size,
-                                   float *out_confidence)
+/* Body-region group definitions for per-group match breakdown.
+ * Each group maps descriptor feature indices to a body region. */
+#define NUM_GAIT_GROUPS 4
+typedef struct {
+    const char *name;
+    float       confidence;  /* per-group confidence % */
+} GaitGroupScore;
+
+static void compute_group_contributions(const float *detected,
+                                         const float *matched,
+                                         int size,
+                                         float overall_confidence,
+                                         GaitGroupScore scores[NUM_GAIT_GROUPS])
+{
+    /* Feature-to-group mapping:
+     *   Legs:      0,1 (knee angles), 8 (knee sym), 16,17 (cadence,stride), 23 (regularity)
+     *   Hips:      2,3 (hip angles), 9 (hip sym), 14 (hip width), 18,19 (bounce,sway)
+     *   Arms:      4,5 (elbow angles), 10 (elbow sym), 20 (arm swing)
+     *   Shoulders: 6,7 (shld angles), 11 (shld sym), 12,13 (proportions), 15 (sh ratio), 21,22 (lean)
+     */
+    static const int legs_feats[]      = {0,1,8,16,17,23};
+    static const int hips_feats[]      = {2,3,9,14,18,19};
+    static const int arms_feats[]      = {4,5,10,20};
+    static const int shoulders_feats[] = {6,7,11,12,13,15,21,22};
+
+    const int *groups[]  = {legs_feats, hips_feats, arms_feats, shoulders_feats};
+    const int  counts[]  = {6, 6, 4, 8};
+    const char *names[]  = {"Legs", "Hips", "Arms", "Shoulders"};
+
+    /* Compute per-group squared distances and total */
+    float group_sq[NUM_GAIT_GROUPS];
+    float total_sq = 0;
+
+    for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
+        float sum = 0;
+        for (int i = 0; i < counts[g]; i++) {
+            int fi = groups[g][i];
+            if (fi < size) {
+                float d = detected[fi] - matched[fi];
+                sum += d * d;
+            }
+        }
+        group_sq[g] = sum;
+        total_sq += sum;
+    }
+
+    /* Per-group confidence: linearly interpolate from overall confidence.
+     * A group contributing 0% of total distance = 100% confidence.
+     * A group contributing its expected share (n/N) = overall confidence.
+     * A group contributing more than expected = below overall confidence.
+     *
+     * contribution = group_sq / total_sq  (fraction of total distance²)
+     * expected     = n / N               (fair share)
+     * ratio        = contribution / expected  (1.0 = average, >1 = worse)
+     * confidence   = overall * (2 - ratio), clamped
+     */
+    for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
+        scores[g].name = names[g];
+        if (total_sq < 1e-10f) {
+            scores[g].confidence = overall_confidence;
+        } else {
+            float contribution = group_sq[g] / total_sq;
+            float expected = (float)counts[g] / (float)size;
+            float ratio = contribution / expected;
+            /* ratio < 1 → this group matches better than average
+             * ratio = 1 → matches same as average
+             * ratio > 1 → matches worse than average */
+            scores[g].confidence = overall_confidence * (2.0f - ratio);
+        }
+    }
+}
+
+/* gait_best_match_detailed: match descriptor and return per-group breakdown.
+ * and per-group contribution scores. */
+static const char *gait_best_match_detailed(const float *descriptor, int size,
+                                            float *out_confidence,
+                                            GaitGroupScore group_scores[NUM_GAIT_GROUPS])
 {
     float       best_dist  = GAIT_MATCH_THRESHOLD;
     const char *best_label = NULL;
+    int         best_idx   = -1;
 
     for (int i = 0; i < g_num_gait; i++) {
         if (g_gait[i].descriptor_size != size) continue;
@@ -559,23 +655,45 @@ static const char *gait_best_match(const float *descriptor, int size,
         if (dist < best_dist) {
             best_dist  = dist;
             best_label = g_gait[i].label;
+            best_idx   = i;
         }
     }
+
     if (out_confidence) {
         if (best_label)
             *out_confidence = (1.0f - best_dist / GAIT_MATCH_THRESHOLD) * 100.0f;
         else {
             float closest = -1;
+            int closest_idx = -1;
             for (int i = 0; i < g_num_gait; i++) {
                 if (g_gait[i].descriptor_size != size) continue;
                 float dist = gait_distance(descriptor,
                                            g_gait[i].descriptor, size);
-                if (closest < 0 || dist < closest) closest = dist;
+                if (closest < 0 || dist < closest) {
+                    closest = dist;
+                    closest_idx = i;
+                }
             }
             *out_confidence = (closest >= 0)
                 ? (1.0f - closest / GAIT_MATCH_THRESHOLD) * 100.0f : 0;
+            best_idx = closest_idx;
         }
     }
+
+    /* Compute per-group breakdown */
+    if (group_scores && best_idx >= 0) {
+        compute_group_contributions(descriptor,
+                                     g_gait[best_idx].descriptor,
+                                     size, *out_confidence,
+                                     group_scores);
+    } else if (group_scores) {
+        for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
+            const char *names[] = {"Legs", "Hips", "Arms", "Shoulders"};
+            group_scores[g].name = names[g];
+            group_scores[g].confidence = 0;
+        }
+    }
+
     return best_label;
 }
 
@@ -661,7 +779,9 @@ static int collect_gait_frames(const char *video_path,
 static void draw_body_on_context(VNHumanBodyPoseObservation *body,
                                  CGContextRef ctx,
                                  size_t imgW, size_t imgH,
-                                 const char *label)
+                                 const char *label,
+                                 const float *matched_desc,
+                                 int desc_size)
 {
     /* Draw white rods */
     typedef struct { int from, to; } Bone;
@@ -698,13 +818,210 @@ static void draw_body_on_context(VNHumanBodyPoseObservation *body,
         CGContextStrokePath(ctx);
     }
 
-    /* Draw joint dots */
-    CGFloat dotR = 8.0;
-    for (int i = 0; i < JI_COUNT; i++) {
-        if (!gf.valid[i]) continue;
-        CGFloat px = gf.joints[i].x * imgW;
-        CGFloat py = gf.joints[i].y * imgH;
-        CGContextSetRGBFillColor(ctx, 0.0, 1.0, 0.5, 1.0);
+    /* Joint color map (matches body_detector.m) */
+    static const struct { int idx; CGFloat r, g, b; } jcolors[] = {
+        { JI_NOSE,            1.0, 0.2, 0.2 },  /* red        */
+        { JI_LEFT_EYE,        0.0, 1.0, 1.0 },  /* cyan       */
+        { JI_RIGHT_EYE,       0.0, 1.0, 1.0 },  /* cyan       */
+        { JI_LEFT_EAR,        1.0, 0.8, 0.0 },  /* orange     */
+        { JI_RIGHT_EAR,       1.0, 0.8, 0.0 },  /* orange     */
+        { JI_LEFT_SHOULDER,   0.0, 1.0, 0.0 },  /* green      */
+        { JI_RIGHT_SHOULDER,  0.0, 1.0, 0.0 },  /* green      */
+        { JI_NECK,            0.4, 1.0, 0.4 },  /* l-green    */
+        { JI_LEFT_ELBOW,      0.0, 0.6, 1.0 },  /* blue       */
+        { JI_RIGHT_ELBOW,     0.0, 0.6, 1.0 },  /* blue       */
+        { JI_LEFT_WRIST,      0.4, 0.4, 1.0 },  /* l-blue     */
+        { JI_RIGHT_WRIST,     0.4, 0.4, 1.0 },  /* l-blue     */
+        { JI_LEFT_HIP,        1.0, 1.0, 0.0 },  /* yellow     */
+        { JI_RIGHT_HIP,       1.0, 1.0, 0.0 },  /* yellow     */
+        { JI_ROOT,            1.0, 0.5, 0.0 },  /* orange     */
+        { JI_LEFT_KNEE,       1.0, 0.4, 0.7 },  /* pink       */
+        { JI_RIGHT_KNEE,      1.0, 0.4, 0.7 },  /* pink       */
+        { JI_LEFT_ANKLE,      0.6, 0.2, 1.0 },  /* purple     */
+        { JI_RIGHT_ANKLE,     0.6, 0.2, 1.0 },  /* purple     */
+    };
+    int njcolors = sizeof(jcolors) / sizeof(jcolors[0]);
+
+    /* ---- Per-frame group scores from instantaneous joint angles ---- */
+    /* Compare this frame's angles against the matched descriptor means:
+     *   desc[0] = knee mean,  desc[2] = hip mean,
+     *   desc[4] = elbow mean, desc[6] = shoulder mean
+     * Also body proportions:
+     *   desc[12] = upper/lower, desc[13] = shoulder width / height,
+     *   desc[14] = hip width / height, desc[15] = shoulder/hip ratio
+     * Deviation from mean → confidence for that group.
+     * Threshold: within desc[1]/2 (half the range) = good match. */
+    GaitGroupScore frame_scores[NUM_GAIT_GROUPS];
+    int have_frame_scores = 0;
+    static const char *grp_names[] = {"Legs", "Hips", "Arms", "Shoulders"};
+
+    if (matched_desc && desc_size >= 16) {
+        float deviations[NUM_GAIT_GROUPS] = {0};
+        int   dev_count[NUM_GAIT_GROUPS]  = {0};
+
+        /* Legs: knee angle */
+        if (gf.valid[JI_LEFT_HIP] && gf.valid[JI_LEFT_KNEE] &&
+            gf.valid[JI_LEFT_ANKLE]) {
+            float a = angle_at_vertex(gf.joints[JI_LEFT_HIP],
+                                      gf.joints[JI_LEFT_KNEE],
+                                      gf.joints[JI_LEFT_ANKLE]);
+            float range = fmaxf(matched_desc[1], 0.1f);
+            deviations[0] += fabsf(a - matched_desc[0]) / range;
+            dev_count[0]++;
+        }
+        if (gf.valid[JI_RIGHT_HIP] && gf.valid[JI_RIGHT_KNEE] &&
+            gf.valid[JI_RIGHT_ANKLE]) {
+            float a = angle_at_vertex(gf.joints[JI_RIGHT_HIP],
+                                      gf.joints[JI_RIGHT_KNEE],
+                                      gf.joints[JI_RIGHT_ANKLE]);
+            float range = fmaxf(matched_desc[1], 0.1f);
+            deviations[0] += fabsf(a - matched_desc[0]) / range;
+            dev_count[0]++;
+        }
+
+        /* Hips: hip angle (leg swing) */
+        if (gf.valid[JI_LEFT_SHOULDER] && gf.valid[JI_LEFT_HIP] &&
+            gf.valid[JI_LEFT_KNEE]) {
+            float a = angle_at_vertex(gf.joints[JI_LEFT_SHOULDER],
+                                      gf.joints[JI_LEFT_HIP],
+                                      gf.joints[JI_LEFT_KNEE]);
+            float range = fmaxf(matched_desc[3], 0.1f);
+            deviations[1] += fabsf(a - matched_desc[2]) / range;
+            dev_count[1]++;
+        }
+        if (gf.valid[JI_RIGHT_SHOULDER] && gf.valid[JI_RIGHT_HIP] &&
+            gf.valid[JI_RIGHT_KNEE]) {
+            float a = angle_at_vertex(gf.joints[JI_RIGHT_SHOULDER],
+                                      gf.joints[JI_RIGHT_HIP],
+                                      gf.joints[JI_RIGHT_KNEE]);
+            float range = fmaxf(matched_desc[3], 0.1f);
+            deviations[1] += fabsf(a - matched_desc[2]) / range;
+            dev_count[1]++;
+        }
+
+        /* Arms: elbow angle */
+        if (gf.valid[JI_LEFT_SHOULDER] && gf.valid[JI_LEFT_ELBOW] &&
+            gf.valid[JI_LEFT_WRIST]) {
+            float a = angle_at_vertex(gf.joints[JI_LEFT_SHOULDER],
+                                      gf.joints[JI_LEFT_ELBOW],
+                                      gf.joints[JI_LEFT_WRIST]);
+            float range = fmaxf(matched_desc[5], 0.1f);
+            deviations[2] += fabsf(a - matched_desc[4]) / range;
+            dev_count[2]++;
+        }
+        if (gf.valid[JI_RIGHT_SHOULDER] && gf.valid[JI_RIGHT_ELBOW] &&
+            gf.valid[JI_RIGHT_WRIST]) {
+            float a = angle_at_vertex(gf.joints[JI_RIGHT_SHOULDER],
+                                      gf.joints[JI_RIGHT_ELBOW],
+                                      gf.joints[JI_RIGHT_WRIST]);
+            float range = fmaxf(matched_desc[5], 0.1f);
+            deviations[2] += fabsf(a - matched_desc[4]) / range;
+            dev_count[2]++;
+        }
+
+        /* Shoulders: shoulder angle (arm swing) */
+        if (gf.valid[JI_NECK] && gf.valid[JI_LEFT_SHOULDER] &&
+            gf.valid[JI_LEFT_ELBOW]) {
+            float a = angle_at_vertex(gf.joints[JI_NECK],
+                                      gf.joints[JI_LEFT_SHOULDER],
+                                      gf.joints[JI_LEFT_ELBOW]);
+            float range = fmaxf(matched_desc[7], 0.1f);
+            deviations[3] += fabsf(a - matched_desc[6]) / range;
+            dev_count[3]++;
+        }
+        if (gf.valid[JI_NECK] && gf.valid[JI_RIGHT_SHOULDER] &&
+            gf.valid[JI_RIGHT_ELBOW]) {
+            float a = angle_at_vertex(gf.joints[JI_NECK],
+                                      gf.joints[JI_RIGHT_SHOULDER],
+                                      gf.joints[JI_RIGHT_ELBOW]);
+            float range = fmaxf(matched_desc[7], 0.1f);
+            deviations[3] += fabsf(a - matched_desc[6]) / range;
+            dev_count[3]++;
+        }
+
+        /* Convert deviations to confidence:
+         * deviation/range <= 0.5 → within expected range → 100%
+         * deviation/range  = 1.0 → at edge of range → 50%
+         * deviation/range  = 2.0 → double the range → 0%
+         * Linear: confidence = (1 - avg_dev / 2) * 100, clamped to [0,100] */
+        for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
+            frame_scores[g].name = grp_names[g];
+            if (dev_count[g] > 0) {
+                float avg_dev = deviations[g] / dev_count[g];
+                float conf = (1.0f - avg_dev / 2.0f) * 100.0f;
+                if (conf < 0) conf = 0;
+                if (conf > 100) conf = 100;
+                frame_scores[g].confidence = conf;
+            } else {
+                frame_scores[g].confidence = -1;  /* no data */
+            }
+        }
+        have_frame_scores = 1;
+    }
+
+    /* Joint-to-group mapping:
+     *   0=Legs, 1=Hips, 2=Arms, 3=Shoulders, -1=no group */
+    static const int joint_group[JI_COUNT] = {
+        -1,  /* NOSE          */
+        -1,  /* LEFT_EYE      */
+        -1,  /* RIGHT_EYE     */
+        -1,  /* LEFT_EAR      */
+        -1,  /* RIGHT_EAR     */
+         3,  /* NECK          → Shoulders */
+         3,  /* LEFT_SHOULDER  → Shoulders */
+         3,  /* RIGHT_SHOULDER → Shoulders */
+         2,  /* LEFT_ELBOW    → Arms */
+         2,  /* RIGHT_ELBOW   → Arms */
+         2,  /* LEFT_WRIST    → Arms */
+         2,  /* RIGHT_WRIST   → Arms */
+         1,  /* ROOT          → Hips */
+         1,  /* LEFT_HIP      → Hips */
+         1,  /* RIGHT_HIP     → Hips */
+         0,  /* LEFT_KNEE     → Legs */
+         0,  /* RIGHT_KNEE    → Legs */
+         0,  /* LEFT_ANKLE    → Legs */
+         0,  /* RIGHT_ANKLE   → Legs */
+    };
+
+    /* Draw halos based on per-frame group scores */
+    if (have_frame_scores) {
+        CGFloat haloR = 20.0;
+        CGContextSetLineWidth(ctx, 3.0);
+        for (int i = 0; i < njcolors; i++) {
+            int ji = jcolors[i].idx;
+            if (!gf.valid[ji]) continue;
+            int grp = joint_group[ji];
+            if (grp < 0) continue;
+
+            float conf = frame_scores[grp].confidence;
+            if (conf < 0) continue;  /* no data for this group */
+
+            CGFloat hr, hg, hb, ha;
+            if (conf >= 70.0f) {
+                hr = 0.0; hg = 1.0; hb = 0.0; ha = 0.8;  /* green */
+            } else if (conf >= 40.0f) {
+                hr = 1.0; hg = 1.0; hb = 0.0; ha = 0.6;  /* yellow */
+            } else {
+                hr = 1.0; hg = 0.0; hb = 0.0; ha = 0.5;  /* red */
+            }
+
+            CGFloat px = gf.joints[ji].x * imgW;
+            CGFloat py = gf.joints[ji].y * imgH;
+            CGContextSetRGBStrokeColor(ctx, hr, hg, hb, ha);
+            CGContextStrokeEllipseInRect(ctx,
+                CGRectMake(px - haloR, py - haloR, haloR * 2, haloR * 2));
+        }
+    }
+
+    /* Draw colored joint dots */
+    CGFloat dotR = 12.0;
+    for (int i = 0; i < njcolors; i++) {
+        int ji = jcolors[i].idx;
+        if (!gf.valid[ji]) continue;
+        CGFloat px = gf.joints[ji].x * imgW;
+        CGFloat py = gf.joints[ji].y * imgH;
+        CGContextSetRGBFillColor(ctx, jcolors[i].r, jcolors[i].g,
+                                 jcolors[i].b, 1.0);
         CGContextFillEllipseInRect(ctx,
             CGRectMake(px - dotR, py - dotR, dotR * 2, dotR * 2));
     }
@@ -716,6 +1033,28 @@ static void draw_body_on_context(VNHumanBodyPoseObservation *body,
             gf.joints[JI_NOSE].y * imgH,
             80, 20);
         draw_label(ctx, label, labelRect, 0.0, 0.7, 0.0);
+    }
+
+    /* Draw per-group legend in top-left corner */
+    if (have_frame_scores) {
+        for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
+            if (frame_scores[g].confidence < 0) continue;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s: %.0f%%",
+                     frame_scores[g].name, frame_scores[g].confidence);
+
+            CGFloat lr, lg, lb;
+            if (frame_scores[g].confidence >= 70.0f) {
+                lr = 0.0; lg = 1.0; lb = 0.0;
+            } else if (frame_scores[g].confidence >= 40.0f) {
+                lr = 1.0; lg = 1.0; lb = 0.0;
+            } else {
+                lr = 1.0; lg = 0.3; lb = 0.3;
+            }
+
+            CGRect legendRect = CGRectMake(10, 10 + g * 22, 160, 20);
+            draw_label(ctx, buf, legendRect, lr, lg, lb);
+        }
     }
 }
 
@@ -795,21 +1134,87 @@ int gait_detect_video(const char *input_path, const char *output_path,
         /* Extract gait descriptor and match */
         const char *gait_label = NULL;
         float gait_confidence = 0;
+        float detected_desc[MAX_GAIT_DESCRIPTOR_SIZE];
+        float matched_desc[MAX_GAIT_DESCRIPTOR_SIZE];
+        int matched_desc_size = 0;
+        int detected_desc_size = 0;
+        GaitGroupScore group_scores[NUM_GAIT_GROUPS];
+        int has_groups = 0;
         if (nframes >= MIN_GAIT_FRAMES) {
-            float descriptor[MAX_GAIT_DESCRIPTOR_SIZE];
-            int desc_size = extract_gait_descriptor(frames, nframes,
-                                                    duration, descriptor);
-            if (desc_size > 0)
-                gait_label = gait_best_match(descriptor, desc_size,
-                                             &gait_confidence);
+            detected_desc_size = extract_gait_descriptor(frames, nframes,
+                                                          duration,
+                                                          detected_desc);
+            if (detected_desc_size > 0) {
+                gait_label = gait_best_match_detailed(detected_desc,
+                                                       detected_desc_size,
+                                                       &gait_confidence,
+                                                       group_scores);
+                has_groups = 1;
+            }
         }
         free(frames);
 
-        if (gait_label)
+        /* Find the matched descriptor from training DB for per-frame overlay */
+        if (has_groups) {
+            /* Find closest entry (matched or closest if unknown) */
+            float best_dist = 1e9f;
+            for (int i = 0; i < g_num_gait; i++) {
+                if (g_gait[i].descriptor_size != detected_desc_size) continue;
+                float dist = gait_distance(detected_desc,
+                                           g_gait[i].descriptor,
+                                           detected_desc_size);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    memcpy(matched_desc, g_gait[i].descriptor,
+                           g_gait[i].descriptor_size * sizeof(float));
+                    matched_desc_size = g_gait[i].descriptor_size;
+                }
+            }
+        }
+
+        /* Feature names for diagnostic output */
+        static const char *feat_names[] = {
+            "knee mean",     "knee range",       /*  0, 1  */
+            "hip mean",      "hip range",        /*  2, 3  */
+            "elbow mean",    "elbow range",      /*  4, 5  */
+            "shoulder mean", "shoulder range",    /*  6, 7  */
+            "knee sym",      "hip sym",          /*  8, 9  */
+            "elbow sym",     "shoulder sym",     /* 10,11  */
+            "upper/lower",   "shld width",       /* 12,13  */
+            "hip width",     "shld/hip ratio",   /* 14,15  */
+            "cadence",       "stride",           /* 16,17  */
+            "bounce",        "sway",             /* 18,19  */
+            "arm swing",     "lean mean",        /* 20,21  */
+            "lean stddev",   "regularity",       /* 22,23  */
+        };
+
+        if (gait_label) {
             printf("Gait match: %s (confidence: %.1f%%)\n",
                    gait_label, gait_confidence);
-        else
+        } else {
             printf("Gait: no match (confidence: %.1f%%)\n", gait_confidence);
+        }
+
+        if (has_groups && matched_desc_size > 0) {
+            float total_sq = 0;
+            float feat_sq[MAX_GAIT_DESCRIPTOR_SIZE];
+            for (int i = 0; i < detected_desc_size; i++) {
+                float d = detected_desc[i] - matched_desc[i];
+                feat_sq[i] = d * d;
+                total_sq += feat_sq[i];
+            }
+            float total_dist = sqrtf(total_sq);
+
+            printf("  Per-feature distance breakdown (total: %.3f, threshold: %.2f):\n",
+                   total_dist, GAIT_MATCH_THRESHOLD);
+            for (int i = 0; i < detected_desc_size; i++) {
+                float pct = (total_sq > 0) ? (feat_sq[i] / total_sq) * 100.0f : 0;
+                const char *bar = (pct > 20) ? "!!!" : (pct > 10) ? "!! " : (pct > 5) ? "!  " : "   ";
+                printf("    [%2d] %-15s  detected=%.3f  trained=%.3f  dist²=%5.1f%% %s\n",
+                       i, (i < 24) ? feat_names[i] : "?",
+                       detected_desc[i], matched_desc[i], pct, bar);
+            }
+        }
 
         /* Now produce the annotated output video */
         NSString *inPath = [NSString stringWithUTF8String:input_path];
@@ -924,7 +1329,9 @@ int gait_detect_video(const char *input_path, const char *output_path,
                 if (!vErr && request.results.count > 0) {
                     for (VNHumanBodyPoseObservation *body in request.results)
                         draw_body_on_context(body, ctx, width, height,
-                                             label_buf);
+                                             label_buf,
+                                             matched_desc_size > 0 ? matched_desc : NULL,
+                                             matched_desc_size);
                 }
 
                 /* Write frame */
