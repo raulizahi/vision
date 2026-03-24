@@ -716,6 +716,9 @@ int face_detect(const char *image_path, const char *output_path)
             if (desc_size > 0)
                 match = find_best_match(descriptor, desc_size, &confidence);
 
+            /* Skip detections with negative confidence */
+            if (confidence < 0.0f) continue;
+
             /* Draw rectangle and label */
             if (match) {
                 char label_buf[320];

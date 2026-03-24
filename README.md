@@ -52,7 +52,8 @@ Recognition uses **Euclidean distance** in the 40-dimensional descriptor space:
 2. Compare against all descriptors in the training database
 3. Find the closest match below the threshold (default: **0.80**)
 4. Confidence score: `(1.0 - distance / threshold) * 100%`
-5. If no match falls below the threshold, the face is labeled **unknown**
+5. Detections with negative confidence are discarded
+6. If no match falls below the threshold, the face is labeled **unknown**
 
 ### Why Geometric Descriptors?
 
