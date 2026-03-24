@@ -113,8 +113,19 @@ vision/
   face_detector.m     Core implementation (Objective-C)
   main.c              Command-line interface (C)
   Makefile            Build configuration
-  training.dat        Binary training database (auto-generated)
-  training-set/       Training images
+```
+
+### Not included in the repo (generated locally)
+
+- **`training.dat`** — Binary training database, auto-generated when you run `./vision train`. Contains serialized label + descriptor pairs.
+- **`training-set/`** — Directory for training images. Create this directory and populate it with labeled face images at various angles (e.g., center, left, right) for best results.
+
+To get started, create a `training-set/` folder and train the model:
+
+```bash
+mkdir training-set
+# Add your face images, then:
+./vision train yourname training-set/photo1.jpg training-set/photo2.jpg
 ```
 
 ## Enhancements & Design Decisions

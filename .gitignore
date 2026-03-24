@@ -1,3 +1,7 @@
+# Training data (kept locally)
+training.dat
+training-set/
+
 # Build artifacts
 *.o
 vision
