@@ -6,7 +6,23 @@ A lightweight face detection and recognition system built on Apple's Vision fram
 
 ### Detection
 
-Faces are detected using Apple's `VNDetectFaceLandmarksRequest`, which returns bounding boxes and 68+ facial landmark points across ~12 anatomical regions (eyes, eyebrows, nose, lips, face contour, etc.).
+Faces are detected using Apple's `VNDetectFaceLandmarksRequest` (revision 3), which returns bounding boxes and 68+ facial landmark points across ~12 anatomical regions (eyes, eyebrows, nose, lips, face contour, etc.).
+
+#### Multi-Scale Tiled Detection
+
+To detect faces that are small relative to the overall image, detection runs at three scales:
+
+| Pass | Tile Size | Overlap | Effective Magnification |
+|------|-----------|---------|------------------------|
+| 1 | Full image | — | 1× |
+| 2 | W/2 × H/2 | 50% | 2× |
+| 3 | W/4 × H/4 | 50% | 4× |
+
+Tile-detected face coordinates are remapped to the original image space, and overlapping detections are deduplicated using an IoU (Intersection over Union) threshold.
+
+#### Vertical-Flip Detection
+
+Detection also runs on a vertically-flipped copy of the image at all three scales. This catches upside-down faces — for example, reflections in mirrors or ceiling-mounted cameras. Flipped detections are mapped back to the original image coordinates and deduplicated against upright detections.
 
 ### Recognition Algorithm: Geometric Descriptor
 
@@ -34,7 +50,7 @@ Recognition uses **Euclidean distance** in the 40-dimensional descriptor space:
 
 1. Compute the descriptor for the detected face
 2. Compare against all descriptors in the training database
-3. Find the closest match below the threshold (default: **1.20**)
+3. Find the closest match below the threshold (default: **0.80**)
 4. Confidence score: `(1.0 - distance / threshold) * 100%`
 5. If no match falls below the threshold, the face is labeled **unknown**
 
@@ -101,9 +117,11 @@ Landmark color coding:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `MATCH_THRESHOLD` | 1.20 | Euclidean distance threshold for recognition. Lower = stricter matching. |
+| `MATCH_THRESHOLD` | 0.80 | Euclidean distance threshold for recognition. Lower = stricter matching. |
 | `MAX_DESCRIPTOR_SIZE` | 80 | Buffer size for descriptor storage (currently 40 floats used). |
 | `MAX_TRAINING_ENTRIES` | 1000 | Maximum number of labeled face descriptors. |
+| `TILE_OVERLAP` | 0.50 | Overlap ratio between adjacent tiles in multi-scale detection. |
+| `DEDUP_IOU_THRESHOLD` | 0.30 | IoU above which two detections are considered duplicates. |
 
 ## Project Structure
 
@@ -141,3 +159,7 @@ mkdir training-set
 5. **Multi-pose training** — Training with images from multiple angles (center, left, right) captures the natural variation in geometric ratios under head rotation, improving recognition robustness.
 
 6. **Pure C interface** — The Objective-C implementation is hidden behind a clean C API (`face_detector.h`), making it easy to integrate into C/C++ projects or wrap with FFI bindings.
+
+7. **Multi-scale tiled detection** — Automatically detects small faces by running Vision at multiple tile resolutions (full, half, quarter), with coordinate remapping and IoU-based deduplication.
+
+8. **Vertical-flip detection** — Runs detection on a vertically-flipped copy of the image to catch upside-down faces such as mirror reflections, doubling the effective detection coverage.
