@@ -70,7 +70,7 @@ Requires macOS with Xcode command-line tools installed.
 make
 ```
 
-This compiles `main.c` (C) and `face_detector.m` (Objective-C with ARC) and links against Foundation, Vision, AppKit, CoreGraphics, CoreText, ImageIO, and UniformTypeIdentifiers.
+This compiles `main.c` (C), `face_detector.m` and `video_detector.m` (Objective-C with ARC) and links against Foundation, Vision, AppKit, CoreGraphics, CoreText, ImageIO, UniformTypeIdentifiers, AVFoundation, CoreMedia, and CoreVideo.
 
 ## Usage
 
@@ -106,6 +106,21 @@ Landmark color coding:
 | Median line | Light blue |
 | Pupils | Red |
 
+### Detect Video
+
+Detect and identify faces across a video file. Samples frames at a configurable interval, runs multi-scale face detection on each, and produces an annotated output video (MP4/H.264).
+
+```bash
+./vision detect-video security.mp4 annotated.mp4
+./vision detect-video clip.mov annotated.mp4 --interval 0.5
+```
+
+- Supports any input format that macOS can play (`.mp4`, `.mov`, `.m4v`, etc.)
+- Output is always MP4 (H.264)
+- Default sampling interval is 1 second (configurable with `--interval`)
+- Each sampled frame is annotated with bounding boxes and identity labels
+- Timestamped detection summary is printed to stdout
+
 ### Manage Training Data
 
 ```bash
@@ -128,10 +143,13 @@ Landmark color coding:
 
 ```
 vision/
-  face_detector.h     C interface header (public API)
-  face_detector.m     Core implementation (Objective-C)
-  main.c              Command-line interface (C)
-  Makefile            Build configuration
+  face_detector.h            C interface header (public API)
+  face_detector.m            Core implementation (Objective-C)
+  face_detector_internal.h   Internal helpers shared across modules
+  video_detector.h           Video detection API header
+  video_detector.m           Video detection implementation (AVFoundation)
+  main.c                     Command-line interface (C)
+  Makefile                   Build configuration
 ```
 
 ### Not included in the repo (generated locally)

@@ -11,10 +11,13 @@ FRAMEWORKS = -framework Foundation \
              -framework CoreGraphics \
              -framework CoreText   \
              -framework ImageIO    \
-             -framework UniformTypeIdentifiers
+             -framework UniformTypeIdentifiers \
+             -framework AVFoundation \
+             -framework CoreMedia  \
+             -framework CoreVideo
 
 TARGET  = vision
-OBJECTS = main.o face_detector.o
+OBJECTS = main.o face_detector.o video_detector.o
 
 .PHONY: all clean
 
@@ -26,8 +29,11 @@ $(TARGET): $(OBJECTS)
 main.o: main.c face_detector.h
 	$(CC) $(CFLAGS) -c main.c
 
-face_detector.o: face_detector.m face_detector.h
+face_detector.o: face_detector.m face_detector.h face_detector_internal.h
 	$(CC) $(OBJCFLAGS) -c face_detector.m
+
+video_detector.o: video_detector.m video_detector.h face_detector.h face_detector_internal.h
+	$(CC) $(OBJCFLAGS) -c video_detector.m
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)

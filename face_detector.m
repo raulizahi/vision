@@ -11,6 +11,7 @@
 #import <CoreText/CoreText.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "face_detector.h"
+#include "face_detector_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -154,16 +155,6 @@ static NSArray<VNFaceObservation *> *detect_faces(CGImageRef cgImage)
 /*  Multi-scale (tiled) detection                                      */
 /* ------------------------------------------------------------------ */
 
-/*
- * A DetectedFace stores a face observation together with its bounding
- * box remapped to full-image normalized coordinates (0-1).
- */
-#define MAX_DETECTED_FACES 256
-
-typedef struct {
-    VNFaceObservation * __unsafe_unretained face;
-    CGRect  fullBB;          /* bounding box in full-image normalised coords */
-} DetectedFace;
 
 static CGFloat iou(CGRect a, CGRect b)
 {
@@ -307,9 +298,9 @@ static int detect_on_image(CGImageRef image,
  * All results are deduplicated and mapped to original-image coordinates.
  * Returns the number of unique faces found.
  */
-static int detect_faces_multiscale(CGImageRef cgImage,
-                                   DetectedFace *out, int capacity,
-                                   NSMutableArray *retainPool)
+int detect_faces_multiscale(CGImageRef cgImage,
+                            DetectedFace *out, int capacity,
+                            NSMutableArray *retainPool)
 {
     int n = 0;
 
@@ -389,7 +380,7 @@ static CGFloat pt_dist(CGPoint a, CGPoint b)
  * scale, and moderately robust to head rotation.
  * Returns number of floats written, or 0 if no landmarks available.
  */
-static int extract_descriptor(VNFaceObservation *face, float *descriptor)
+int extract_descriptor(VNFaceObservation *face, float *descriptor)
 {
     VNFaceLandmarks2D *lm = face.landmarks;
     if (!lm) return 0;
@@ -451,8 +442,8 @@ static float compute_distance(const float *a, const float *b, int size)
  * Find the training label with the smallest distance to the given
  * descriptor.  Returns NULL if no match is within MATCH_THRESHOLD.
  */
-static const char *find_best_match(const float *descriptor, int size,
-                                   float *out_confidence)
+const char *find_best_match(const float *descriptor, int size,
+                            float *out_confidence)
 {
     float       best_dist  = MATCH_THRESHOLD;
     const char *best_label = NULL;
@@ -493,16 +484,16 @@ static const char *find_best_match(const float *descriptor, int size,
 /*  Drawing helpers                                                    */
 /* ------------------------------------------------------------------ */
 
-static void draw_rect(CGContextRef ctx, CGRect rect,
-                       CGFloat r, CGFloat g, CGFloat b)
+void draw_rect(CGContextRef ctx, CGRect rect,
+               CGFloat r, CGFloat g, CGFloat b)
 {
     CGContextSetRGBStrokeColor(ctx, r, g, b, 1.0);
     CGContextSetLineWidth(ctx, RECT_LINE_WIDTH);
     CGContextStrokeRect(ctx, rect);
 }
 
-static void draw_label(CGContextRef ctx, const char *text,
-                        CGRect faceRect, CGFloat r, CGFloat g, CGFloat b)
+void draw_label(CGContextRef ctx, const char *text,
+                CGRect faceRect, CGFloat r, CGFloat g, CGFloat b)
 {
     /* Create attributed string */
     NSString *nsText = [NSString stringWithUTF8String:text];
@@ -538,8 +529,8 @@ static void draw_label(CGContextRef ctx, const char *text,
     CFRelease(line);
 }
 
-static void draw_landmarks(CGContextRef ctx, VNFaceObservation *face,
-                            CGRect bb, size_t imgW, size_t imgH)
+void draw_landmarks(CGContextRef ctx, VNFaceObservation *face,
+                    CGRect bb, size_t imgW, size_t imgH)
 {
     VNFaceLandmarks2D *landmarks = face.landmarks;
     if (!landmarks) return;

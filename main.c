@@ -5,8 +5,10 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "face_detector.h"
+#include "video_detector.h"
 
 #define DEFAULT_DB "training.dat"
 
@@ -19,18 +21,25 @@ static void usage(const char *prog)
             "Train on face(s) in image(s)\n"
         "  %s detect <image> <output.png>            "
             "Detect & identify faces, save annotated image\n"
+        "  %s detect-video <video> <output.mp4>      "
+            "Detect faces in video, save annotated video\n"
         "  %s list                                   "
             "List training database entries\n"
         "  %s reset                                  "
             "Clear training database\n\n"
         "Options:\n"
-        "  --db <path>   Training database file "
-            "(default: %s)\n\n"
+        "  --db <path>       Training database file "
+            "(default: %s)\n"
+        "  --interval <sec>  Sampling interval for detect-video "
+            "(default: 1.0)\n\n"
         "Examples:\n"
         "  %s train alice photo1.jpg photo2.jpg\n"
         "  %s train bob   bob_selfie.png\n"
-        "  %s detect group_photo.jpg output.png\n",
-        prog, prog, prog, prog, DEFAULT_DB, prog, prog, prog);
+        "  %s detect group_photo.jpg output.png\n"
+        "  %s detect-video security.mp4 annotated.mp4\n"
+        "  %s detect-video security.mp4 annotated.mp4 --interval 0.5\n",
+        prog, prog, prog, prog, prog, DEFAULT_DB,
+        prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char *argv[])
@@ -101,6 +110,26 @@ int main(int argc, char *argv[])
             } else {
                 printf("Found %d face(s). Annotated image saved to %s\n",
                        n, output);
+            }
+        }
+
+    } else if (strcmp(command, "detect-video") == 0) {
+        if (argc - arg_start < 3) {
+            fprintf(stderr, "error: detect-video requires a video path and "
+                            "output path\n");
+            usage(argv[0]);
+            rc = 1;
+        } else {
+            const char *input  = argv[arg_start + 1];
+            const char *output = argv[arg_start + 2];
+            double interval = 1.0;
+            if (argc - arg_start >= 5 &&
+                strcmp(argv[arg_start + 3], "--interval") == 0)
+                interval = atof(argv[arg_start + 4]);
+            int n = face_detect_video(input, output, interval);
+            if (n < 0) {
+                fprintf(stderr, "error: video detection failed\n");
+                rc = 1;
             }
         }
 
