@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Raul I. Lopez
+# SPDX-License-Identifier: MIT
+# See LICENSE file for details.
+
 CC        = clang
 CFLAGS    = -Wall -Wextra -O2
 OBJCFLAGS = -Wall -Wextra -O2 -fobjc-arc

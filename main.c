@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Raul I. Lopez
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for details.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include "face_detector.h"

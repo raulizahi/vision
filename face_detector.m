@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Raul I. Lopez
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for details.
+ */
+
 #import <Foundation/Foundation.h>
 #import <Vision/Vision.h>
 #import <AppKit/AppKit.h>
