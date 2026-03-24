@@ -116,7 +116,7 @@ static int load_training_db(void)
 /*  Vision helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-static CGImageRef load_cgimage(const char *path)
+CGImageRef load_cgimage(const char *path)
 {
     NSString *nsPath = [NSString stringWithUTF8String:path];
     NSURL *url = [NSURL fileURLWithPath:nsPath];
@@ -575,7 +575,7 @@ void draw_landmarks(CGContextRef ctx, VNFaceObservation *face,
     }
 }
 
-static int save_png(CGContextRef ctx, const char *path)
+int save_png(CGContextRef ctx, const char *path)
 {
     CGImageRef image = CGBitmapContextCreateImage(ctx);
     if (!image) {

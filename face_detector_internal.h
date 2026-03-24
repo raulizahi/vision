@@ -40,4 +40,8 @@ void draw_label(CGContextRef ctx, const char *text,
 void draw_landmarks(CGContextRef ctx, VNFaceObservation *face,
                     CGRect bb, size_t imgW, size_t imgH);
 
+/* Image I/O helpers */
+CGImageRef load_cgimage(const char *path);
+int save_png(CGContextRef ctx, const char *path);
+
 #endif /* FACE_DETECTOR_INTERNAL_H */
