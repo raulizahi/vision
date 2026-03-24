@@ -251,7 +251,7 @@ static int extract_gait_descriptor(GaitFrame *frames, int nframes,
     float *sway     = calloc(nframes, sizeof(float));
     float *lean     = calloc(nframes, sizeof(float));
     float *ankle_osc = calloc(nframes, sizeof(float));
-    float *arm_ang  = calloc(nframes, sizeof(float));
+    float *arm_ang  = calloc(nframes * 2, sizeof(float));  /* 2 per frame (L+R) */
 
     int n_knee_l = 0, n_knee_r = 0;
     int n_hip_l = 0, n_hip_r = 0;
