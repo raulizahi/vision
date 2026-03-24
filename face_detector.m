@@ -21,7 +21,7 @@
 
 #define MAX_DESCRIPTOR_SIZE 80    /* geometric ratio features          */
 #define MAX_TRAINING_ENTRIES 1000
-#define MATCH_THRESHOLD      1.20f /* Euclidean distance threshold     */
+#define MATCH_THRESHOLD      0.80f /* Euclidean distance threshold     */
 #define RECT_LINE_WIDTH      3.0
 #define LABEL_FONT_SIZE     18.0
 #define LABEL_PADDING        4.0
