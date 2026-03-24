@@ -1,0 +1,9 @@
+# Build artifacts
+*.o
+vision
+
+# Output images
+output*.png
+
+# OS
+.DS_Store
