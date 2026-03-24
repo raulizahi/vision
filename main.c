@@ -10,6 +10,7 @@
 #include "face_detector.h"
 #include "video_detector.h"
 #include "body_detector.h"
+#include "gait_detector.h"
 
 #define DEFAULT_DB "training.dat"
 
@@ -28,15 +29,25 @@ static void usage(const char *prog)
             "Detect body poses, draw stick figures\n"
         "  %s body-video <video> <output.mp4>        "
             "Detect body poses in video, draw stick figures\n"
+        "  %s train-gait <label> <video>             "
+            "Train gait from walking video\n"
+        "  %s detect-gait <video> <output.mp4>       "
+            "Identify person by gait in video\n"
+        "  %s gait-list                              "
+            "List gait training database entries\n"
+        "  %s gait-reset                             "
+            "Clear gait training database\n"
         "  %s list                                   "
-            "List training database entries\n"
+            "List face training database entries\n"
         "  %s reset                                  "
-            "Clear training database\n\n"
+            "Clear face training database\n\n"
         "Options:\n"
-        "  --db <path>       Training database file "
+        "  --db <path>       Face training database file "
             "(default: %s)\n"
-        "  --interval <sec>  Sampling interval for detect-video "
-            "(default: 1.0)\n\n"
+        "  --gait-db <path>  Gait training database file "
+            "(default: gait_training.dat)\n"
+        "  --interval <sec>  Sampling interval for video commands "
+            "(default: 1.0, gait default: 0.1)\n\n"
         "Examples:\n"
         "  %s train alice photo1.jpg photo2.jpg\n"
         "  %s train bob   bob_selfie.png\n"
@@ -44,20 +55,31 @@ static void usage(const char *prog)
         "  %s detect-video security.mp4 annotated.mp4\n"
         "  %s detect-video security.mp4 annotated.mp4 --interval 0.5\n"
         "  %s body photo.jpg pose.png\n"
-        "  %s body-video dance.mp4 pose.mp4\n",
-        prog, prog, prog, prog, prog, prog, prog, DEFAULT_DB,
-        prog, prog, prog, prog, prog, prog, prog);
+        "  %s body-video dance.mp4 pose.mp4\n"
+        "  %s train-gait raul walking.mp4\n"
+        "  %s detect-gait testvideo.mp4 output.mp4\n",
+        prog, prog, prog, prog, prog, prog, prog, prog, prog,
+        prog, prog, DEFAULT_DB,
+        prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char *argv[])
 {
     const char *db_path = DEFAULT_DB;
+    const char *gait_db_path = "gait_training.dat";
     int arg_start = 1;
 
-    /* Parse --db option */
-    if (argc >= 3 && strcmp(argv[1], "--db") == 0) {
-        db_path = argv[2];
-        arg_start = 3;
+    /* Parse options */
+    while (arg_start + 1 < argc) {
+        if (strcmp(argv[arg_start], "--db") == 0) {
+            db_path = argv[arg_start + 1];
+            arg_start += 2;
+        } else if (strcmp(argv[arg_start], "--gait-db") == 0) {
+            gait_db_path = argv[arg_start + 1];
+            arg_start += 2;
+        } else {
+            break;
+        }
     }
 
     if (argc - arg_start < 1) {
@@ -69,6 +91,10 @@ int main(int argc, char *argv[])
 
     if (face_init(db_path) != 0) {
         fprintf(stderr, "error: failed to initialize face detector\n");
+        return 1;
+    }
+    if (gait_init(gait_db_path) != 0) {
+        fprintf(stderr, "error: failed to initialize gait detector\n");
         return 1;
     }
 
@@ -179,6 +205,52 @@ int main(int argc, char *argv[])
             }
         }
 
+    } else if (strcmp(command, "train-gait") == 0) {
+        if (argc - arg_start < 3) {
+            fprintf(stderr, "error: train-gait requires a label and "
+                            "a video path\n");
+            usage(argv[0]);
+            rc = 1;
+        } else {
+            const char *label = argv[arg_start + 1];
+            const char *video = argv[arg_start + 2];
+            double interval = 0.1;  /* denser sampling for gait */
+            if (argc - arg_start >= 5 &&
+                strcmp(argv[arg_start + 3], "--interval") == 0)
+                interval = atof(argv[arg_start + 4]);
+            int n = gait_train(video, label, interval);
+            if (n <= 0) {
+                fprintf(stderr, "error: gait training failed\n");
+                rc = 1;
+            }
+        }
+
+    } else if (strcmp(command, "detect-gait") == 0) {
+        if (argc - arg_start < 3) {
+            fprintf(stderr, "error: detect-gait requires a video path and "
+                            "output path\n");
+            usage(argv[0]);
+            rc = 1;
+        } else {
+            const char *input  = argv[arg_start + 1];
+            const char *output = argv[arg_start + 2];
+            double interval = 0.1;
+            if (argc - arg_start >= 5 &&
+                strcmp(argv[arg_start + 3], "--interval") == 0)
+                interval = atof(argv[arg_start + 4]);
+            int n = gait_detect_video(input, output, interval);
+            if (n < 0) {
+                fprintf(stderr, "error: gait detection failed\n");
+                rc = 1;
+            }
+        }
+
+    } else if (strcmp(command, "gait-list") == 0) {
+        gait_list_training();
+
+    } else if (strcmp(command, "gait-reset") == 0) {
+        gait_reset();
+
     } else if (strcmp(command, "list") == 0) {
         face_list_training();
 
@@ -192,5 +264,6 @@ int main(int argc, char *argv[])
     }
 
     face_cleanup();
+    gait_cleanup();
     return rc;
 }

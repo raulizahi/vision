@@ -17,7 +17,7 @@ FRAMEWORKS = -framework Foundation \
              -framework CoreVideo
 
 TARGET  = vision
-OBJECTS = main.o face_detector.o video_detector.o body_detector.o
+OBJECTS = main.o face_detector.o video_detector.o body_detector.o gait_detector.o
 
 .PHONY: all clean
 
@@ -37,6 +37,9 @@ video_detector.o: video_detector.m video_detector.h face_detector.h face_detecto
 
 body_detector.o: body_detector.m body_detector.h face_detector_internal.h
 	$(CC) $(OBJCFLAGS) -c body_detector.m
+
+gait_detector.o: gait_detector.m gait_detector.h face_detector_internal.h
+	$(CC) $(OBJCFLAGS) -c gait_detector.m
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
