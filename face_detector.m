@@ -179,10 +179,132 @@ static CGFloat iou(CGRect a, CGRect b)
 }
 
 /*
- * Run face detection on the full image and on overlapping half-size
- * tiles (pass 2), collecting all unique faces into `out`.
- * `retainPool` keeps ARC-managed face observations alive across tile
- * iterations — caller must keep the pool alive while using `out`.
+ * Create a vertically-flipped copy of a CGImage.
+ * Caller must CGImageRelease the result.
+ */
+static CGImageRef create_vflipped_image(CGImageRef src)
+{
+    size_t w = CGImageGetWidth(src);
+    size_t h = CGImageGetHeight(src);
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+        NULL, w, h, 8, w * 4, cs, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return NULL;
+
+    /* Flip vertically: translate to top then scale y by -1 */
+    CGContextTranslateCTM(ctx, 0, (CGFloat)h);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), src);
+
+    CGImageRef flipped = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return flipped;
+}
+
+/*
+ * Internal: run detection on `image` (full + tiles), appending results
+ * to `out`.  Tile bounding boxes are remapped to `image`-normalised
+ * coordinates, then the caller-supplied `remap` block converts those
+ * to the *original* (unflipped) image's normalised coordinates.
+ *
+ * `imgW`/`imgH` are in CGImage (top-left-origin) pixel coordinates.
+ */
+static int detect_on_image(CGImageRef image,
+                            CGRect (^remap)(CGRect bb),
+                            DetectedFace *out, int n, int capacity,
+                            NSMutableArray *retainPool)
+{
+    size_t imgW = CGImageGetWidth(image);
+    size_t imgH = CGImageGetHeight(image);
+
+    /* --- Full image ------------------------------------------------ */
+    NSArray<VNFaceObservation *> *faces = detect_faces(image);
+    for (VNFaceObservation *face in faces) {
+        if (n >= capacity) break;
+        CGRect mapped = remap(face.boundingBox);
+        int dup = 0;
+        for (int i = 0; i < n; i++) {
+            if (iou(out[i].fullBB, mapped) > DEDUP_IOU_THRESHOLD)
+                { dup = 1; break; }
+        }
+        if (dup) continue;
+        [retainPool addObject:face];
+        out[n].face   = face;
+        out[n].fullBB = mapped;
+        n++;
+    }
+
+    /* --- Tiled passes: half-size (÷2) then quarter-size (÷4) ----- */
+    int divisions[] = { 2, 4 };
+    int num_passes = sizeof(divisions) / sizeof(divisions[0]);
+
+    for (int pass = 0; pass < num_passes; pass++) {
+        int div = divisions[pass];
+        CGFloat tileW = imgW / (CGFloat)div;
+        CGFloat tileH = imgH / (CGFloat)div;
+        CGFloat stepX = tileW * (1.0 - TILE_OVERLAP);
+        CGFloat stepY = tileH * (1.0 - TILE_OVERLAP);
+
+        for (CGFloat ty = 0; ty + tileH <= imgH + 1; ty += stepY) {
+            for (CGFloat tx = 0; tx + tileW <= imgW + 1; tx += stepX) {
+                CGRect tileRect = CGRectMake(
+                    (int)tx, (int)ty,
+                    (int)fmin(tileW, imgW - tx),
+                    (int)fmin(tileH, imgH - ty));
+
+                if (tileRect.size.width < 64 || tileRect.size.height < 64)
+                    continue;
+
+                CGImageRef tile = CGImageCreateWithImageInRect(image, tileRect);
+                if (!tile) continue;
+
+                NSArray<VNFaceObservation *> *tileFaces = detect_faces(tile);
+
+                for (VNFaceObservation *face in tileFaces) {
+                    CGRect bb = face.boundingBox;
+
+                    /*
+                     * Remap tile-local Vision coords → full-image Vision coords.
+                     * CGImageCreateWithImageInRect uses top-left origin (CGImage),
+                     * but Vision bounding boxes use bottom-left origin.
+                     * Convert: tile bottom in Vision-y = (imgH - ty - tileH) / imgH
+                     */
+                    CGRect imgBB = CGRectMake(
+                        (tileRect.origin.x + bb.origin.x * tileRect.size.width) / imgW,
+                        (imgH - tileRect.origin.y - tileRect.size.height
+                         + bb.origin.y * tileRect.size.height) / imgH,
+                        (bb.size.width  * tileRect.size.width)  / imgW,
+                        (bb.size.height * tileRect.size.height) / imgH);
+
+                    CGRect mapped = remap(imgBB);
+
+                    int dup = 0;
+                    for (int i = 0; i < n; i++) {
+                        if (iou(out[i].fullBB, mapped) > DEDUP_IOU_THRESHOLD)
+                            { dup = 1; break; }
+                    }
+                    if (dup) continue;
+
+                    if (n >= capacity) break;
+                    [retainPool addObject:face];
+                    out[n].face   = face;
+                    out[n].fullBB = mapped;
+                    n++;
+                }
+
+                CGImageRelease(tile);
+            }
+        }
+    }
+
+    return n;
+}
+
+/*
+ * Run face detection on the original image and its vertical flip,
+ * each at full resolution and with overlapping half-size tiles.
+ * All results are deduplicated and mapped to original-image coordinates.
  * Returns the number of unique faces found.
  */
 static int detect_faces_multiscale(CGImageRef cgImage,
@@ -190,69 +312,24 @@ static int detect_faces_multiscale(CGImageRef cgImage,
                                    NSMutableArray *retainPool)
 {
     int n = 0;
-    size_t imgW = CGImageGetWidth(cgImage);
-    size_t imgH = CGImageGetHeight(cgImage);
 
-    /* --- Pass 1: full image ---------------------------------------- */
-    NSArray<VNFaceObservation *> *fullFaces = detect_faces(cgImage);
-    for (VNFaceObservation *face in fullFaces) {
-        if (n >= capacity) break;
-        [retainPool addObject:face];
-        out[n].face   = face;
-        out[n].fullBB = face.boundingBox;   /* already in full-image space */
-        n++;
-    }
+    /* --- Original image (identity remap) --------------------------- */
+    n = detect_on_image(cgImage, ^(CGRect bb){ return bb; },
+                        out, n, capacity, retainPool);
 
-    /* --- Pass 2: 2×2 overlapping tiles ----------------------------- */
-    CGFloat tileW = imgW / 2.0;
-    CGFloat tileH = imgH / 2.0;
-    CGFloat stepX = tileW * (1.0 - TILE_OVERLAP);
-    CGFloat stepY = tileH * (1.0 - TILE_OVERLAP);
-
-    for (CGFloat ty = 0; ty + tileH <= imgH + 1; ty += stepY) {
-        for (CGFloat tx = 0; tx + tileW <= imgW + 1; tx += stepX) {
-            CGRect tileRect = CGRectMake(
-                (int)tx, (int)ty,
-                (int)fmin(tileW, imgW - tx),
-                (int)fmin(tileH, imgH - ty));
-
-            if (tileRect.size.width < 64 || tileRect.size.height < 64)
-                continue;
-
-            CGImageRef tile = CGImageCreateWithImageInRect(cgImage, tileRect);
-            if (!tile) continue;
-
-            NSArray<VNFaceObservation *> *tileFaces = detect_faces(tile);
-
-            for (VNFaceObservation *face in tileFaces) {
-                CGRect bb = face.boundingBox;
-
-                /* Remap normalised tile coords → normalised full-image coords */
-                CGRect mapped = CGRectMake(
-                    (tileRect.origin.x + bb.origin.x * tileRect.size.width)  / imgW,
-                    (tileRect.origin.y + bb.origin.y * tileRect.size.height) / imgH,
-                    (bb.size.width  * tileRect.size.width)  / imgW,
-                    (bb.size.height * tileRect.size.height) / imgH);
-
-                /* Deduplicate: skip if IoU with an existing detection is high */
-                int dup = 0;
-                for (int i = 0; i < n; i++) {
-                    if (iou(out[i].fullBB, mapped) > DEDUP_IOU_THRESHOLD) {
-                        dup = 1;
-                        break;
-                    }
-                }
-                if (dup) continue;
-
-                if (n >= capacity) break;
-                [retainPool addObject:face];
-                out[n].face   = face;
-                out[n].fullBB = mapped;
-                n++;
-            }
-
-            CGImageRelease(tile);
-        }
+    /* --- Vertically-flipped image ---------------------------------- */
+    CGImageRef flipped = create_vflipped_image(cgImage);
+    if (flipped) {
+        n = detect_on_image(flipped,
+            ^(CGRect bb){
+                /* Flip y back to original image coordinates */
+                return CGRectMake(bb.origin.x,
+                                  1.0 - bb.origin.y - bb.size.height,
+                                  bb.size.width,
+                                  bb.size.height);
+            },
+            out, n, capacity, retainPool);
+        CGImageRelease(flipped);
     }
 
     return n;
