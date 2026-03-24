@@ -25,6 +25,8 @@
 #define RECT_LINE_WIDTH      3.0
 #define LABEL_FONT_SIZE     18.0
 #define LABEL_PADDING        4.0
+#define TILE_OVERLAP         0.5  /* 50 % overlap between adjacent tiles  */
+#define DEDUP_IOU_THRESHOLD  0.3  /* IoU above which two boxes are dupes  */
 
 /* ------------------------------------------------------------------ */
 /*  Training entry                                                     */
@@ -133,6 +135,7 @@ static NSArray<VNFaceObservation *> *detect_faces(CGImageRef cgImage)
 {
     VNDetectFaceLandmarksRequest *request =
         [[VNDetectFaceLandmarksRequest alloc] init];
+    request.revision = VNDetectFaceLandmarksRequestRevision3;
 
     VNImageRequestHandler *handler =
         [[VNImageRequestHandler alloc] initWithCGImage:cgImage options:@{}];
@@ -145,6 +148,114 @@ static NSArray<VNFaceObservation *> *detect_faces(CGImageRef cgImage)
         return @[];
     }
     return request.results ?: @[];
+}
+
+/* ------------------------------------------------------------------ */
+/*  Multi-scale (tiled) detection                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A DetectedFace stores a face observation together with its bounding
+ * box remapped to full-image normalized coordinates (0-1).
+ */
+#define MAX_DETECTED_FACES 256
+
+typedef struct {
+    VNFaceObservation * __unsafe_unretained face;
+    CGRect  fullBB;          /* bounding box in full-image normalised coords */
+} DetectedFace;
+
+static CGFloat iou(CGRect a, CGRect b)
+{
+    CGFloat x0 = fmax(CGRectGetMinX(a), CGRectGetMinX(b));
+    CGFloat y0 = fmax(CGRectGetMinY(a), CGRectGetMinY(b));
+    CGFloat x1 = fmin(CGRectGetMaxX(a), CGRectGetMaxX(b));
+    CGFloat y1 = fmin(CGRectGetMaxY(a), CGRectGetMaxY(b));
+    if (x1 <= x0 || y1 <= y0) return 0.0;
+    CGFloat inter = (x1 - x0) * (y1 - y0);
+    CGFloat areaA = a.size.width * a.size.height;
+    CGFloat areaB = b.size.width * b.size.height;
+    return inter / (areaA + areaB - inter);
+}
+
+/*
+ * Run face detection on the full image and on overlapping half-size
+ * tiles (pass 2), collecting all unique faces into `out`.
+ * `retainPool` keeps ARC-managed face observations alive across tile
+ * iterations — caller must keep the pool alive while using `out`.
+ * Returns the number of unique faces found.
+ */
+static int detect_faces_multiscale(CGImageRef cgImage,
+                                   DetectedFace *out, int capacity,
+                                   NSMutableArray *retainPool)
+{
+    int n = 0;
+    size_t imgW = CGImageGetWidth(cgImage);
+    size_t imgH = CGImageGetHeight(cgImage);
+
+    /* --- Pass 1: full image ---------------------------------------- */
+    NSArray<VNFaceObservation *> *fullFaces = detect_faces(cgImage);
+    for (VNFaceObservation *face in fullFaces) {
+        if (n >= capacity) break;
+        [retainPool addObject:face];
+        out[n].face   = face;
+        out[n].fullBB = face.boundingBox;   /* already in full-image space */
+        n++;
+    }
+
+    /* --- Pass 2: 2×2 overlapping tiles ----------------------------- */
+    CGFloat tileW = imgW / 2.0;
+    CGFloat tileH = imgH / 2.0;
+    CGFloat stepX = tileW * (1.0 - TILE_OVERLAP);
+    CGFloat stepY = tileH * (1.0 - TILE_OVERLAP);
+
+    for (CGFloat ty = 0; ty + tileH <= imgH + 1; ty += stepY) {
+        for (CGFloat tx = 0; tx + tileW <= imgW + 1; tx += stepX) {
+            CGRect tileRect = CGRectMake(
+                (int)tx, (int)ty,
+                (int)fmin(tileW, imgW - tx),
+                (int)fmin(tileH, imgH - ty));
+
+            if (tileRect.size.width < 64 || tileRect.size.height < 64)
+                continue;
+
+            CGImageRef tile = CGImageCreateWithImageInRect(cgImage, tileRect);
+            if (!tile) continue;
+
+            NSArray<VNFaceObservation *> *tileFaces = detect_faces(tile);
+
+            for (VNFaceObservation *face in tileFaces) {
+                CGRect bb = face.boundingBox;
+
+                /* Remap normalised tile coords → normalised full-image coords */
+                CGRect mapped = CGRectMake(
+                    (tileRect.origin.x + bb.origin.x * tileRect.size.width)  / imgW,
+                    (tileRect.origin.y + bb.origin.y * tileRect.size.height) / imgH,
+                    (bb.size.width  * tileRect.size.width)  / imgW,
+                    (bb.size.height * tileRect.size.height) / imgH);
+
+                /* Deduplicate: skip if IoU with an existing detection is high */
+                int dup = 0;
+                for (int i = 0; i < n; i++) {
+                    if (iou(out[i].fullBB, mapped) > DEDUP_IOU_THRESHOLD) {
+                        dup = 1;
+                        break;
+                    }
+                }
+                if (dup) continue;
+
+                if (n >= capacity) break;
+                [retainPool addObject:face];
+                out[n].face   = face;
+                out[n].fullBB = mapped;
+                n++;
+            }
+
+            CGImageRelease(tile);
+        }
+    }
+
+    return n;
 }
 
 /* ------------------------------------------------------------------ */
@@ -351,12 +462,10 @@ static void draw_label(CGContextRef ctx, const char *text,
 }
 
 static void draw_landmarks(CGContextRef ctx, VNFaceObservation *face,
-                            size_t imgW, size_t imgH)
+                            CGRect bb, size_t imgW, size_t imgH)
 {
     VNFaceLandmarks2D *landmarks = face.landmarks;
     if (!landmarks) return;
-
-    CGRect bb = face.boundingBox;
 
     /* Draw points for each landmark region with different colors */
     struct { VNFaceLandmarkRegion2D *region; CGFloat r, g, b; } groups[] = {
@@ -448,10 +557,15 @@ int face_train(const char *image_path, const char *label)
         CGImageRef cgImage = load_cgimage(image_path);
         if (!cgImage) return -1;
 
-        NSArray<VNFaceObservation *> *faces = detect_faces(cgImage);
+        NSMutableArray *retainPool = [NSMutableArray array];
+        DetectedFace dfaces[MAX_DETECTED_FACES];
+        int nfaces = detect_faces_multiscale(cgImage, dfaces,
+                                              MAX_DETECTED_FACES,
+                                              retainPool);
         int stored = 0;
 
-        for (VNFaceObservation *face in faces) {
+        for (int fi = 0; fi < nfaces; fi++) {
+            VNFaceObservation *face = dfaces[fi].face;
             if (g_num_training >= MAX_TRAINING_ENTRIES) {
                 fprintf(stderr, "warning: training database full\n");
                 break;
@@ -497,17 +611,20 @@ int face_detect(const char *image_path, const char *output_path)
 
         CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), cgImage);
 
-        /* Detect faces */
-        NSArray<VNFaceObservation *> *faces = detect_faces(cgImage);
-        int count = 0;
+        /* Detect faces using multi-scale tiled approach */
+        NSMutableArray *retainPool = [NSMutableArray array];
+        DetectedFace detected[MAX_DETECTED_FACES];
+        int count = detect_faces_multiscale(cgImage, detected,
+                                            MAX_DETECTED_FACES,
+                                            retainPool);
 
-        for (VNFaceObservation *face in faces) {
-            count++;
+        for (int fi = 0; fi < count; fi++) {
+            VNFaceObservation *face = detected[fi].face;
+            CGRect bb = detected[fi].fullBB;
 
             /* Convert normalized bounding box to pixel coordinates.
              * Vision: origin at bottom-left, values 0–1.
              * CGContext: origin at bottom-left, values in pixels.  */
-            CGRect bb = face.boundingBox;
             CGRect pixelRect = CGRectMake(
                 bb.origin.x * width,
                 bb.origin.y * height,
@@ -559,8 +676,9 @@ int face_detect(const char *image_path, const char *output_path)
                 CGContextDrawImage(ctx2,
                     CGRectMake(0, 0, width, height), cgImage);
 
-                for (VNFaceObservation *face in faces)
-                    draw_landmarks(ctx2, face, width, height);
+                for (int fi = 0; fi < count; fi++)
+                    draw_landmarks(ctx2, detected[fi].face,
+                                   detected[fi].fullBB, width, height);
 
                 /* Build landmarks path: output.png -> output_landmarks.png */
                 char lm_path[1024];
