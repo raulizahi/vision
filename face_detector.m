@@ -35,9 +35,13 @@
 
 typedef struct {
     char   label[256];
+    char   source[512];              /* source image path              */
     float  descriptor[MAX_DESCRIPTOR_SIZE];
     int    descriptor_size;          /* actual number of floats stored */
 } TrainingEntry;
+
+#define TRAINING_DB_MAGIC   0x46414345  /* "FACE" */
+#define TRAINING_DB_VERSION 2
 
 /* ------------------------------------------------------------------ */
 /*  Globals                                                            */
@@ -62,12 +66,23 @@ static int save_training_db(void)
         fprintf(stderr, "error: cannot write %s\n", g_db_path);
         return -1;
     }
+    /* Version 2 header */
+    uint32_t magic = TRAINING_DB_MAGIC;
+    uint32_t version = TRAINING_DB_VERSION;
+    fwrite(&magic, sizeof(magic), 1, fp);
+    fwrite(&version, sizeof(version), 1, fp);
+
     uint32_t n = (uint32_t)g_num_training;
     fwrite(&n, sizeof(n), 1, fp);
     for (uint32_t i = 0; i < n; i++) {
         uint32_t label_len = (uint32_t)strlen(g_training[i].label);
         fwrite(&label_len, sizeof(label_len), 1, fp);
         fwrite(g_training[i].label, 1, label_len, fp);
+
+        uint32_t source_len = (uint32_t)strlen(g_training[i].source);
+        fwrite(&source_len, sizeof(source_len), 1, fp);
+        fwrite(g_training[i].source, 1, source_len, fp);
+
         uint32_t desc_size = (uint32_t)g_training[i].descriptor_size;
         fwrite(&desc_size, sizeof(desc_size), 1, fp);
         fwrite(g_training[i].descriptor, sizeof(float), desc_size, fp);
@@ -81,11 +96,37 @@ static int load_training_db(void)
     FILE *fp = fopen(g_db_path, "rb");
     if (!fp) return 0;   /* no file yet – not an error */
 
-    uint32_t n = 0;
-    if (fread(&n, sizeof(n), 1, fp) != 1 || n > MAX_TRAINING_ENTRIES) {
+    /* Peek at first uint32 to detect format version */
+    uint32_t first = 0;
+    if (fread(&first, sizeof(first), 1, fp) != 1) {
         fclose(fp);
         return -1;
     }
+
+    int has_source = 0;
+    uint32_t n = 0;
+
+    if (first == TRAINING_DB_MAGIC) {
+        /* Version 2+: magic + version + count */
+        uint32_t version = 0;
+        if (fread(&version, sizeof(version), 1, fp) != 1) {
+            fclose(fp);
+            return -1;
+        }
+        has_source = (version >= 2);
+        if (fread(&n, sizeof(n), 1, fp) != 1 || n > MAX_TRAINING_ENTRIES) {
+            fclose(fp);
+            return -1;
+        }
+    } else {
+        /* Version 1 (legacy): first uint32 is the entry count */
+        n = first;
+        if (n > MAX_TRAINING_ENTRIES) {
+            fclose(fp);
+            return -1;
+        }
+    }
+
     for (uint32_t i = 0; i < n; i++) {
         uint32_t label_len = 0;
         if (fread(&label_len, sizeof(label_len), 1, fp) != 1 ||
@@ -98,6 +139,23 @@ static int load_training_db(void)
             return -1;
         }
         g_training[i].label[label_len] = '\0';
+
+        if (has_source) {
+            uint32_t source_len = 0;
+            if (fread(&source_len, sizeof(source_len), 1, fp) != 1 ||
+                source_len >= sizeof(g_training[i].source)) {
+                fclose(fp);
+                return -1;
+            }
+            if (source_len > 0 &&
+                fread(g_training[i].source, 1, source_len, fp) != source_len) {
+                fclose(fp);
+                return -1;
+            }
+            g_training[i].source[source_len] = '\0';
+        } else {
+            g_training[i].source[0] = '\0';
+        }
 
         uint32_t desc_size = 0;
         if (fread(&desc_size, sizeof(desc_size), 1, fp) != 1 ||
@@ -818,6 +876,8 @@ int face_train(const char *image_path, const char *label)
             if (desc_size > 0) {
                 strncpy(entry->label, label, sizeof(entry->label) - 1);
                 entry->label[sizeof(entry->label) - 1] = '\0';
+                strncpy(entry->source, image_path, sizeof(entry->source) - 1);
+                entry->source[sizeof(entry->source) - 1] = '\0';
                 entry->descriptor_size = desc_size;
                 g_num_training++;
                 stored++;
@@ -1016,9 +1076,15 @@ void face_list_training(void)
     }
     printf("Training database (%d entries):\n", g_num_training);
     for (int i = 0; i < g_num_training; i++) {
-        printf("  [%3d] %-30s  (%d-dim descriptor)\n",
-               i, g_training[i].label,
-               g_training[i].descriptor_size);
+        if (g_training[i].source[0])
+            printf("  [%3d] %-20s  (%d-dim)  %s\n",
+                   i, g_training[i].label,
+                   g_training[i].descriptor_size,
+                   g_training[i].source);
+        else
+            printf("  [%3d] %-20s  (%d-dim)\n",
+                   i, g_training[i].label,
+                   g_training[i].descriptor_size);
     }
 }
 
