@@ -32,6 +32,10 @@ int  extract_descriptor(VNFaceObservation *face, float *descriptor);
 const char *find_best_match(const float *descriptor, int size,
                             float *out_confidence);
 
+/* Runner-up info filled by find_best_match (valid after each call) */
+extern const char *g_runner_up_label;
+extern float       g_runner_up_confidence;
+
 /* Drawing helpers */
 void draw_rect(CGContextRef ctx, CGRect rect,
                CGFloat r, CGFloat g, CGFloat b);

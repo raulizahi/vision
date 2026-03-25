@@ -47,6 +47,10 @@ static TrainingEntry g_training[MAX_TRAINING_ENTRIES];
 static int           g_num_training = 0;
 static char          g_db_path[1024] = "training.dat";
 
+/* Runner-up from last find_best_match call */
+const char *g_runner_up_label = NULL;
+float       g_runner_up_confidence = 0.0f;
+
 /* ------------------------------------------------------------------ */
 /*  Training database persistence                                      */
 /* ------------------------------------------------------------------ */
@@ -445,34 +449,76 @@ static float compute_distance(const float *a, const float *b, int size)
 const char *find_best_match(const float *descriptor, int size,
                             float *out_confidence)
 {
-    float       best_dist  = MATCH_THRESHOLD;
-    const char *best_label = NULL;
+    /* Find best distance per unique label */
+    typedef struct { const char *label; float dist; } LabelDist;
+    LabelDist candidates[128];
+    int num_cand = 0;
 
     for (int i = 0; i < g_num_training; i++) {
         if (g_training[i].descriptor_size != size) continue;
         float dist = compute_distance(descriptor,
                                       g_training[i].descriptor, size);
-        if (dist < best_dist) {
-            best_dist  = dist;
-            best_label = g_training[i].label;
+        int found = 0;
+        for (int c = 0; c < num_cand; c++) {
+            if (strcmp(candidates[c].label, g_training[i].label) == 0) {
+                if (dist < candidates[c].dist)
+                    candidates[c].dist = dist;
+                found = 1;
+                break;
+            }
+        }
+        if (!found && num_cand < 128) {
+            candidates[num_cand].label = g_training[i].label;
+            candidates[num_cand].dist = dist;
+            num_cand++;
         }
     }
+
+    /* Sort by distance */
+    for (int i = 0; i < num_cand - 1; i++)
+        for (int j = i + 1; j < num_cand; j++)
+            if (candidates[j].dist < candidates[i].dist) {
+                LabelDist tmp = candidates[i];
+                candidates[i] = candidates[j];
+                candidates[j] = tmp;
+            }
+
+    /* Print top candidates */
+    if (num_cand > 0) {
+        int show = num_cand < 3 ? num_cand : 3;
+        printf("    candidates:");
+        for (int i = 0; i < show; i++) {
+            float conf = (1.0f - candidates[i].dist / MATCH_THRESHOLD) * 100.0f;
+            printf("  %s %.0f%%", candidates[i].label, conf);
+        }
+        printf("\n");
+    }
+
+    /* Store runner-up */
+    if (num_cand >= 2) {
+        g_runner_up_label = candidates[1].label;
+        g_runner_up_confidence =
+            (1.0f - candidates[1].dist / MATCH_THRESHOLD) * 100.0f;
+    } else {
+        g_runner_up_label = NULL;
+        g_runner_up_confidence = 0.0f;
+    }
+
+    const char *best_label = NULL;
+    float best_dist;
+    if (num_cand > 0 && candidates[0].dist < MATCH_THRESHOLD) {
+        best_label = candidates[0].label;
+        best_dist = candidates[0].dist;
+    } else {
+        best_dist = (num_cand > 0) ? candidates[0].dist : -1.0f;
+    }
+
     if (out_confidence) {
         if (best_label) {
-            /* Matched: confidence based on how far below threshold */
             *out_confidence = (1.0f - best_dist / MATCH_THRESHOLD) * 100.0f;
         } else {
-            /* No match: find closest entry anyway to report confidence */
-            float closest_dist = -1.0f;
-            for (int i = 0; i < g_num_training; i++) {
-                if (g_training[i].descriptor_size != size) continue;
-                float dist = compute_distance(descriptor,
-                                              g_training[i].descriptor, size);
-                if (closest_dist < 0.0f || dist < closest_dist)
-                    closest_dist = dist;
-            }
-            if (closest_dist >= 0.0f)
-                *out_confidence = (1.0f - closest_dist / MATCH_THRESHOLD) * 100.0f;
+            if (best_dist >= 0.0f)
+                *out_confidence = (1.0f - best_dist / MATCH_THRESHOLD) * 100.0f;
             else
                 *out_confidence = 0.0f;
         }
@@ -756,19 +802,31 @@ int face_detect(const char *image_path, const char *output_path)
             /* Skip detections with negative confidence */
             if (confidence < 0.0f) continue;
 
-            /* Draw rectangle and label */
+            /* Draw rectangle and label with runner-up */
             if (match) {
                 char label_buf[320];
-                snprintf(label_buf, sizeof(label_buf),
-                         "%s (%.0f%%)", match, confidence);
+                if (g_runner_up_label)
+                    snprintf(label_buf, sizeof(label_buf),
+                             "%s (%.0f%%) | %s %.0f%%",
+                             match, confidence,
+                             g_runner_up_label, g_runner_up_confidence);
+                else
+                    snprintf(label_buf, sizeof(label_buf),
+                             "%s (%.0f%%)", match, confidence);
                 printf("  Face %d: %s (confidence: %.1f%%)\n",
                        count, match, confidence);
                 draw_rect(ctx, pixelRect, 0.0, 1.0, 0.0);   /* green */
                 draw_label(ctx, label_buf, pixelRect, 0.0, 0.7, 0.0);
             } else {
                 char label_buf[320];
-                snprintf(label_buf, sizeof(label_buf),
-                         "unknown (%.0f%%)", confidence);
+                if (g_runner_up_label)
+                    snprintf(label_buf, sizeof(label_buf),
+                             "unknown (%.0f%%) | %s %.0f%%",
+                             confidence,
+                             g_runner_up_label, g_runner_up_confidence);
+                else
+                    snprintf(label_buf, sizeof(label_buf),
+                             "unknown (%.0f%%)", confidence);
                 printf("  Face %d: unknown (confidence: %.1f%%)\n",
                        count, confidence);
                 draw_rect(ctx, pixelRect, 1.0, 0.2, 0.2);   /* red   */

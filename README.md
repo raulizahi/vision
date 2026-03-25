@@ -6,7 +6,25 @@ A lightweight face detection, recognition, body pose estimation, and gait recogn
 
 ### Detection
 
-Faces are detected using `VNDetectFaceLandmarksRequest` (revision 3) from Apple's [Vision framework](https://developer.apple.com/documentation/vision) (`Vision.framework`), which returns bounding boxes and 68+ facial landmark points across ~12 anatomical regions (eyes, eyebrows, nose, lips, face contour, etc.).
+Faces are detected using `VNDetectFaceLandmarksRequest` (revision 3) from Apple's [Vision framework](https://developer.apple.com/documentation/vision) (`Vision.framework`), which returns bounding boxes and up to **82 facial landmark points** across 12 anatomical regions:
+
+| Region | Points |
+|---|---|
+| Face contour | 17 |
+| Outer lips | 15 |
+| Left eye | 8 |
+| Right eye | 8 |
+| Left eyebrow | 7 |
+| Right eyebrow | 7 |
+| Nose | 7 |
+| Inner lips | 5 |
+| Nose crest | 3 |
+| Median line | 3 |
+| Left pupil | 1 |
+| Right pupil | 1 |
+| **Total** | **82** |
+
+Apple documents these as "68+" because some regions (nose crest, median line, pupils) are optional and may not always be detected. The algorithm uses fallbacks to nearby regions when optional landmarks are absent.
 
 #### Multi-Scale Tiled Detection
 
@@ -30,11 +48,30 @@ The core of the recognition system is a **40-dimensional geometric descriptor** 
 
 #### Descriptor Composition
 
+The 82 landmark points are compressed into a 40-dimensional descriptor in two steps:
+
+**Step 1 — 82 landmarks → 8 region centroids.** The points in each of 8 key regions are averaged to a single (x, y) centroid. For example, the left eye's 8 contour points are averaged to one center point:
+
+| Centroid | Source Region |
+|---|---|
+| c₀ | Left eye (8 pts) |
+| c₁ | Right eye (8 pts) |
+| c₂ | Nose (7 pts) |
+| c₃ | Nose crest (3 pts) |
+| c₄ | Outer lips (15 pts) |
+| c₅ | Left eyebrow (7 pts) |
+| c₆ | Right eyebrow (7 pts) |
+| c₇ | Face contour (17 pts) |
+
+**Step 2 — 8 centroids → 40 features.** Two types of measurements are computed from the centroids:
+
 | Feature Group | Count | Description |
 |---|---|---|
-| Pairwise centroid distances | 28 | Distances between centroids of 8 key facial regions: left eye, right eye, nose, nose crest, outer lips, left eyebrow, right eyebrow, face contour. C(8,2) = 28 pairs. |
-| Region extents | 12 | Width and height of 6 regions: left eye, right eye, nose, outer lips, left eyebrow, right eyebrow. 6 regions x 2 = 12 features. |
+| Pairwise centroid distances | 28 | Euclidean distance between every pair of the 8 centroids. C(8,2) = 28 pairs. |
+| Region extents | 12 | Bounding-box width and height of 6 regions: left eye, right eye, nose, outer lips, left eyebrow, right eyebrow. 6 × 2 = 12 features. |
 | **Total** | **40** | |
+
+Individual landmark positions are discarded — only the **geometric ratios** between regions are kept. These ratios (e.g., eye spacing relative to nose width, eyebrow height relative to lip width) are what distinguish one face from another.
 
 #### Scale Normalization
 

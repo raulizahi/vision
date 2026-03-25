@@ -184,16 +184,28 @@ int face_detect_video(const char *input_path,
                     drawn++;
                     if (match) {
                         char label_buf[320];
-                        snprintf(label_buf, sizeof(label_buf),
-                                 "%s (%.0f%%)", match, confidence);
+                        if (g_runner_up_label)
+                            snprintf(label_buf, sizeof(label_buf),
+                                     "%s (%.0f%%) | %s %.0f%%",
+                                     match, confidence,
+                                     g_runner_up_label, g_runner_up_confidence);
+                        else
+                            snprintf(label_buf, sizeof(label_buf),
+                                     "%s (%.0f%%)", match, confidence);
                         printf("  [%s] Face %d: %s (confidence: %.1f%%)\n",
                                timeBuf, drawn, match, confidence);
                         draw_rect(ctx, pixelRect, 0.0, 1.0, 0.0);
                         draw_label(ctx, label_buf, pixelRect, 0.0, 0.7, 0.0);
                     } else {
                         char label_buf[320];
-                        snprintf(label_buf, sizeof(label_buf),
-                                 "unknown (%.0f%%)", confidence);
+                        if (g_runner_up_label)
+                            snprintf(label_buf, sizeof(label_buf),
+                                     "unknown (%.0f%%) | %s %.0f%%",
+                                     confidence,
+                                     g_runner_up_label, g_runner_up_confidence);
+                        else
+                            snprintf(label_buf, sizeof(label_buf),
+                                     "unknown (%.0f%%)", confidence);
                         printf("  [%s] Face %d: unknown (confidence: %.1f%%)\n",
                                timeBuf, drawn, confidence);
                         draw_rect(ctx, pixelRect, 1.0, 0.2, 0.2);

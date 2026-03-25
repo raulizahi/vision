@@ -645,51 +645,87 @@ static const char *gait_best_match_detailed(const float *descriptor, int size,
                                             float *out_confidence,
                                             GaitGroupScore group_scores[NUM_GAIT_GROUPS])
 {
-    float       best_dist  = GAIT_MATCH_THRESHOLD;
-    const char *best_label = NULL;
-    int         best_idx   = -1;
+    /* Find best distance per unique label */
+    typedef struct { const char *label; float dist; int db_idx; } LabelDist;
+    LabelDist candidates[MAX_GAIT_TRAINING];
+    int num_cand = 0;
 
     for (int i = 0; i < g_num_gait; i++) {
         if (g_gait[i].descriptor_size != size) continue;
         float dist = gait_distance(descriptor, g_gait[i].descriptor, size);
-        if (dist < best_dist) {
-            best_dist  = dist;
-            best_label = g_gait[i].label;
-            best_idx   = i;
+        int found = 0;
+        for (int c = 0; c < num_cand; c++) {
+            if (strcmp(candidates[c].label, g_gait[i].label) == 0) {
+                if (dist < candidates[c].dist) {
+                    candidates[c].dist = dist;
+                    candidates[c].db_idx = i;
+                }
+                found = 1;
+                break;
+            }
         }
+        if (!found && num_cand < MAX_GAIT_TRAINING) {
+            candidates[num_cand].label = g_gait[i].label;
+            candidates[num_cand].dist = dist;
+            candidates[num_cand].db_idx = i;
+            num_cand++;
+        }
+    }
+
+    /* Sort by distance */
+    for (int i = 0; i < num_cand - 1; i++)
+        for (int j = i + 1; j < num_cand; j++)
+            if (candidates[j].dist < candidates[i].dist) {
+                LabelDist tmp = candidates[i];
+                candidates[i] = candidates[j];
+                candidates[j] = tmp;
+            }
+
+    /* Print top candidates */
+    if (num_cand > 0) {
+        int show = num_cand < 3 ? num_cand : 3;
+        printf("  Gait candidates:");
+        for (int i = 0; i < show; i++) {
+            float conf = (1.0f - candidates[i].dist / GAIT_MATCH_THRESHOLD) * 100.0f;
+            printf("  %s %.0f%%", candidates[i].label, conf);
+        }
+        printf("\n");
+    }
+
+    const char *best_label = NULL;
+    float best_dist;
+    int best_idx = -1;
+    if (num_cand > 0 && candidates[0].dist < GAIT_MATCH_THRESHOLD) {
+        best_label = candidates[0].label;
+        best_dist = candidates[0].dist;
+        best_idx = candidates[0].db_idx;
+    } else if (num_cand > 0) {
+        best_dist = candidates[0].dist;
+        best_idx = candidates[0].db_idx;
+    } else {
+        best_dist = -1;
     }
 
     if (out_confidence) {
         if (best_label)
             *out_confidence = (1.0f - best_dist / GAIT_MATCH_THRESHOLD) * 100.0f;
-        else {
-            float closest = -1;
-            int closest_idx = -1;
-            for (int i = 0; i < g_num_gait; i++) {
-                if (g_gait[i].descriptor_size != size) continue;
-                float dist = gait_distance(descriptor,
-                                           g_gait[i].descriptor, size);
-                if (closest < 0 || dist < closest) {
-                    closest = dist;
-                    closest_idx = i;
-                }
-            }
-            *out_confidence = (closest >= 0)
-                ? (1.0f - closest / GAIT_MATCH_THRESHOLD) * 100.0f : 0;
-            best_idx = closest_idx;
-        }
+        else if (best_dist >= 0)
+            *out_confidence = (1.0f - best_dist / GAIT_MATCH_THRESHOLD) * 100.0f;
+        else
+            *out_confidence = 0;
     }
 
     /* Compute per-group breakdown */
     if (group_scores && best_idx >= 0) {
         compute_group_contributions(descriptor,
                                      g_gait[best_idx].descriptor,
-                                     size, *out_confidence,
+                                     size,
+                                     out_confidence ? *out_confidence : 0,
                                      group_scores);
     } else if (group_scores) {
         for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
-            const char *names[] = {"Legs", "Hips", "Arms", "Shoulders"};
-            group_scores[g].name = names[g];
+            const char *grp_names[] = {"Legs", "Hips", "Arms", "Shoulders"};
+            group_scores[g].name = grp_names[g];
             group_scores[g].confidence = 0;
         }
     }
