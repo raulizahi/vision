@@ -773,6 +773,33 @@ static int collect_gait_frames(const char *video_path,
 
 
 /* ------------------------------------------------------------------ */
+/*  Overlay label with configurable font size                          */
+/* ------------------------------------------------------------------ */
+
+static void draw_overlay_label(CGContextRef ctx, const char *text,
+                                CGRect rect, CGFloat r, CGFloat g, CGFloat b,
+                                CGFloat fontSize)
+{
+    NSString *nsText = [NSString stringWithUTF8String:text];
+    CTFontRef font = CTFontCreateWithName(CFSTR("Menlo-Bold"), fontSize, NULL);
+    NSDictionary *attrs = @{
+        (id)kCTFontAttributeName : (__bridge id)font,
+        (id)kCTForegroundColorAttributeName :
+            (__bridge id)[[NSColor colorWithRed:r green:g blue:b alpha:1.0] CGColor]
+    };
+    NSAttributedString *attrStr =
+        [[NSAttributedString alloc] initWithString:nsText attributes:attrs];
+    CTLineRef line = CTLineCreateWithAttributedString(
+        (__bridge CFAttributedStringRef)attrStr);
+
+    CGContextSetTextPosition(ctx, rect.origin.x, rect.origin.y);
+    CTLineDraw(line, ctx);
+
+    CFRelease(line);
+    CFRelease(font);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Skeleton drawing (lightweight copy for gait video output)          */
 /* ------------------------------------------------------------------ */
 
@@ -781,6 +808,7 @@ static void draw_body_on_context(VNHumanBodyPoseObservation *body,
                                  size_t imgW, size_t imgH,
                                  const char *label,
                                  const float *matched_desc,
+                                 const float *detected_desc,
                                  int desc_size)
 {
     /* Draw white rods */
@@ -1037,6 +1065,8 @@ static void draw_body_on_context(VNHumanBodyPoseObservation *body,
 
     /* Draw per-group legend in top-left corner */
     if (have_frame_scores) {
+        CGFloat grpFontSz = 36.0;
+        CGFloat grpRowH   = 44.0;
         for (int g = 0; g < NUM_GAIT_GROUPS; g++) {
             if (frame_scores[g].confidence < 0) continue;
             char buf[64];
@@ -1052,8 +1082,68 @@ static void draw_body_on_context(VNHumanBodyPoseObservation *body,
                 lr = 1.0; lg = 0.3; lb = 0.3;
             }
 
-            CGRect legendRect = CGRectMake(10, 10 + g * 22, 160, 20);
-            draw_label(ctx, buf, legendRect, lr, lg, lb);
+            CGRect legendRect = CGRectMake(10, 10 + g * grpRowH, 300, grpRowH);
+            draw_overlay_label(ctx, buf, legendRect, lr, lg, lb, grpFontSz);
+        }
+    }
+
+    /* Draw per-feature breakdown at bottom of image */
+    if (matched_desc && detected_desc && desc_size > 0) {
+        static const char *feat_short[] = {
+            "knee",    "knee rng",   "hip",     "hip rng",
+            "elbow",   "elbow rng",  "shld",    "shld rng",
+            "knee sy", "hip sy",     "elbow sy","shld sy",
+            "up/lo",   "shld w",     "hip w",   "sh/hp",
+            "cadence", "stride",     "bounce",  "sway",
+            "arm sw",  "lean",       "lean sd", "regular",
+        };
+
+        /* Compute total squared distance for percentages */
+        float total_sq = 0;
+        for (int i = 0; i < desc_size; i++) {
+            float w = (i < 24) ? gait_weights[i] : 1.0f;
+            float d = detected_desc[i] - matched_desc[i];
+            total_sq += w * d * d;
+        }
+
+        /* Layout: 2 columns of 12 rows, starting from bottom */
+        CGFloat fontSize = 28.0;
+        int rows = (desc_size + 1) / 2;
+        CGFloat rowH = 34.0;
+        CGFloat colW = (CGFloat)imgW / 2.0;
+        CGFloat baseY = (CGFloat)imgH - rows * rowH - 8;
+
+        /* Semi-transparent background */
+        CGContextSetRGBFillColor(ctx, 0.0, 0.0, 0.0, 0.7);
+        CGContextFillRect(ctx,
+            CGRectMake(0, baseY - 4, (CGFloat)imgW, rows * rowH + 12));
+
+        for (int i = 0; i < desc_size && i < 24; i++) {
+            int col = i / rows;
+            int row = i % rows;
+
+            float w = gait_weights[i];
+            float d = detected_desc[i] - matched_desc[i];
+            float feat_sq = w * d * d;
+            float pct = (total_sq > 0) ? (feat_sq / total_sq) * 100.0f : 0;
+
+            char buf[80];
+            snprintf(buf, sizeof(buf), "%-9s %5.2f/%5.2f %4.0f%%",
+                     feat_short[i], detected_desc[i], matched_desc[i], pct);
+
+            /* Color: green if <5% contribution, yellow 5-15%, red >15% */
+            CGFloat lr, lg, lb;
+            if (pct > 15.0f) {
+                lr = 1.0; lg = 0.3; lb = 0.3;
+            } else if (pct > 5.0f) {
+                lr = 1.0; lg = 1.0; lb = 0.0;
+            } else {
+                lr = 0.6; lg = 1.0; lb = 0.6;
+            }
+
+            CGRect r = CGRectMake(col * colW + 10, baseY + row * rowH,
+                                  colW - 20, rowH);
+            draw_overlay_label(ctx, buf, r, lr, lg, lb, fontSize);
         }
     }
 }
@@ -1120,8 +1210,49 @@ int gait_train(const char *video_path, const char *label,
     }
 }
 
+int gait_predict(const char *video_path, double sample_interval,
+                 char *label_buf, size_t label_buf_size,
+                 float *out_confidence, int *out_pose_frames)
+{
+    @autoreleasepool {
+        GaitFrame *frames = calloc(MAX_GAIT_FRAMES, sizeof(GaitFrame));
+        double duration = 0;
+        int nframes = collect_gait_frames(video_path, sample_interval,
+                                          frames, MAX_GAIT_FRAMES,
+                                          &duration);
+
+        const char *gait_label = NULL;
+        float gait_confidence = 0.0f;
+        if (nframes >= MIN_GAIT_FRAMES) {
+            float detected_desc[MAX_GAIT_DESCRIPTOR_SIZE];
+            int detected_desc_size = extract_gait_descriptor(frames, nframes,
+                                                             duration,
+                                                             detected_desc);
+            if (detected_desc_size > 0) {
+                gait_label = gait_best_match_detailed(detected_desc,
+                                                      detected_desc_size,
+                                                      &gait_confidence,
+                                                      NULL);
+            }
+        }
+
+        free(frames);
+
+        if (label_buf && label_buf_size > 0) {
+            const char *result = gait_label ? gait_label : "unknown";
+            snprintf(label_buf, label_buf_size, "%s", result);
+        }
+        if (out_confidence)
+            *out_confidence = gait_confidence;
+        if (out_pose_frames)
+            *out_pose_frames = nframes;
+
+        return 0;
+    }
+}
+
 int gait_detect_video(const char *input_path, const char *output_path,
-                      double sample_interval)
+                      double sample_interval, int show_overlay)
 {
     @autoreleasepool {
         /* Collect frames for gait analysis */
@@ -1330,7 +1461,8 @@ int gait_detect_video(const char *input_path, const char *output_path,
                     for (VNHumanBodyPoseObservation *body in request.results)
                         draw_body_on_context(body, ctx, width, height,
                                              label_buf,
-                                             matched_desc_size > 0 ? matched_desc : NULL,
+                                             show_overlay && matched_desc_size > 0 ? matched_desc : NULL,
+                                             show_overlay && detected_desc_size > 0 ? detected_desc : NULL,
                                              matched_desc_size);
                 }
 

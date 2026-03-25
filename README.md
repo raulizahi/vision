@@ -212,6 +212,51 @@ Identify people by walking pattern in a video. Produces an annotated output vide
 - Output video is rendered at the same sampling rate
 - Prints gait match result and confidence to stdout
 
+### Evaluate With Confusion Matrices
+
+Benchmark the current face or gait database against a labeled test set. The binary now carries both a progressive app version and an exact build version. The app version starts at `0.5` and advances as `0.5.<git-commit-count>`, while the build version appends the exact git ref and dirty state for traceability.
+
+Expected dataset layout:
+
+```text
+test-faces/
+  alice/
+    img1.jpg
+    img2.jpg
+  bob/
+    img1.jpg
+```
+
+Face evaluation:
+
+```bash
+./vision eval-face test-faces reports
+```
+
+Gait evaluation:
+
+```bash
+./vision eval-gait test-gait reports --interval 0.1
+```
+
+Generated reports:
+
+- `face_predictions_<build>.csv` / `gait_predictions_<build>.csv` — per-sample predictions with actual label, predicted label, confidence, and file path
+- `face_confusion_<build>.csv` / `gait_confusion_<build>.csv` — confusion matrix with actual labels as rows and predicted labels as columns
+- `face_summary_<build>.txt` / `gait_summary_<build>.txt` — app version, build version, dataset path, database path, overall accuracy, and per-label recall
+
+Show the current progressive app version:
+
+```bash
+./vision version
+```
+
+Show the exact build version:
+
+```bash
+./vision build-version
+```
+
 ### Manage Training Data
 
 ```bash
@@ -256,6 +301,8 @@ vision/
 
 - **`training.dat`** — Binary face training database, auto-generated when you run `./vision train`. Contains serialized label + descriptor pairs.
 - **`gait_training.dat`** — Binary gait training database, auto-generated when you run `./vision train-gait`.
+- **`build_version.h`** — Auto-generated compile-time version header, regenerated on each `make`.
+- **`reports/`** — Optional evaluation output directory containing build-tagged confusion matrices and summaries from `eval-face` / `eval-gait`.
 - **`training-set/`** — Directory for training images. Create this directory and populate it with labeled face images at various angles (e.g., center, left, right) for best results.
 
 To get started, create a `training-set/` folder and train the model:

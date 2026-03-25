@@ -655,6 +655,52 @@ int face_train(const char *image_path, const char *label)
     }
 }
 
+int face_predict(const char *image_path,
+                 char *label_buf, size_t label_buf_size,
+                 float *out_confidence, int *out_face_count)
+{
+    @autoreleasepool {
+        CGImageRef cgImage = load_cgimage(image_path);
+        if (!cgImage) return -1;
+
+        NSMutableArray *retainPool = [NSMutableArray array];
+        DetectedFace detected[MAX_DETECTED_FACES];
+        int count = detect_faces_multiscale(cgImage, detected,
+                                            MAX_DETECTED_FACES,
+                                            retainPool);
+
+        const char *best_label = NULL;
+        float best_confidence = -1.0f;
+
+        for (int fi = 0; fi < count; fi++) {
+            VNFaceObservation *face = detected[fi].face;
+            float descriptor[MAX_DESCRIPTOR_SIZE];
+            int desc_size = extract_descriptor(face, descriptor);
+            if (desc_size <= 0) continue;
+
+            float confidence = 0.0f;
+            const char *match = find_best_match(descriptor, desc_size,
+                                                &confidence);
+            if (confidence > best_confidence) {
+                best_confidence = confidence;
+                best_label = match;
+            }
+        }
+
+        if (label_buf && label_buf_size > 0) {
+            const char *result = best_label ? best_label : "unknown";
+            snprintf(label_buf, label_buf_size, "%s", result);
+        }
+        if (out_confidence)
+            *out_confidence = (best_confidence >= 0.0f) ? best_confidence : 0.0f;
+        if (out_face_count)
+            *out_face_count = count;
+
+        CGImageRelease(cgImage);
+        return 0;
+    }
+}
+
 int face_detect(const char *image_path, const char *output_path)
 {
     @autoreleasepool {

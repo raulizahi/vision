@@ -7,6 +7,8 @@
 #ifndef FACE_DETECTOR_H
 #define FACE_DETECTOR_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,6 +33,15 @@ int face_train(const char *image_path, const char *label);
  * Returns the number of faces found, or -1 on error.
  */
 int face_detect(const char *image_path, const char *output_path);
+
+/*
+ * Predict the identity of the most confident face in image_path without
+ * rendering an output image. Writes either the matched label or "unknown"
+ * into label_buf. Returns 0 on success, -1 on error.
+ */
+int face_predict(const char *image_path,
+                 char *label_buf, size_t label_buf_size,
+                 float *out_confidence, int *out_face_count);
 
 /*
  * Print the current training database entries to stdout.

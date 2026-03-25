@@ -7,6 +7,8 @@
 #ifndef GAIT_DETECTOR_H
 #define GAIT_DETECTOR_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,7 +33,16 @@ int gait_train(const char *video_path, const char *label,
  * Returns total identifications, or -1 on error.
  */
 int gait_detect_video(const char *input_path, const char *output_path,
-                      double sample_interval);
+                      double sample_interval, int show_overlay);
+
+/*
+ * Predict the identity of the walker in a video without rendering an
+ * annotated output video. Writes either the matched label or "unknown"
+ * into label_buf. Returns 0 on success, -1 on error.
+ */
+int gait_predict(const char *video_path, double sample_interval,
+                 char *label_buf, size_t label_buf_size,
+                 float *out_confidence, int *out_pose_frames);
 
 /*
  * Print the current gait training database entries to stdout.
