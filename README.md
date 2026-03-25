@@ -342,13 +342,15 @@ Show the exact build version:
 ### Manage Training Data
 
 ```bash
-./vision list              # Show face training entries
+./vision list              # Show face training entries with source images
 ./vision reset             # Clear face training database
-./vision gait-list         # Show gait training entries
+./vision gait-list         # Show gait training entries with source videos
 ./vision gait-reset        # Clear gait training database
 ./vision --db custom.dat train alice photo.jpg        # Custom face database
 ./vision --gait-db custom.dat train-gait raul walk.mp4  # Custom gait database
 ```
+
+Both `list` and `gait-list` display the source file used for each training entry. Training databases use a versioned binary format (v2) and are backward compatible with older databases that lack source paths.
 
 ## Configuration
 
