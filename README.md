@@ -83,14 +83,59 @@ All distances and extents are **normalized by the inter-ocular distance (IOD)** 
 
 #### Matching
 
-Recognition uses **Euclidean distance** in the 40-dimensional descriptor space:
+Recognition uses **weighted Euclidean distance** in the 40-dimensional descriptor space:
+
+```
+distance = √( Σ w[i] · (a[i] - b[i])² )   for i = 0..39
+```
+
+where `a` is the detected face's 40D descriptor, `b` is a training entry's descriptor, and `w[i]` is a per-dimension weight. Each of the 40 dimensions is either a pairwise centroid distance (28) or a region extent (12), all normalized by IOD.
+
+#### Per-Dimension Weights
+
+Empirical analysis of intra-class vs. inter-class separation showed that region extent heights are the strongest cross-subject discriminators, while several pairwise centroid distances mainly capture head-pose variation. Weights boost stable, discriminative dimensions:
+
+| Weight | Dimensions | Rationale |
+|---|---|---|
+| 2.0 | Eye heights, Lips height | Strongest cross-subject discriminators |
+| 1.5 | Brow heights | Good discriminators |
+| 1.0 | Brow spacing | Stable, good separation |
+| 0.7 | Eye-Nose, Nose-Brow distances | Moderate pose sensitivity |
+| 0.5 | Eye-Brow, Lips-Brow, Brow-Contour | Weak discriminators |
+| 0.3 | Widths, Contour distances, Nose-Lips | Poor discrimination |
+| 0.1 | Nose-Contour, NoseCrest-Contour | Near-zero discrimination |
+| 0.0 | dist(L-Eye, R-Eye) | Always 1.0 (IOD normalizer) |
+
+#### Pose-Aware Matching
+
+Head rotation changes landmark geometry enough that a frontal face of person A can be closer to a frontal face of person B than to a profile of person A. To address this, matching estimates head pose from the ratio of dist(L-Eye, Nose) to dist(R-Eye, Nose):
+
+- Ratio ≈ 1.0 → frontal
+- Ratio > 1.3 → turned left
+- Ratio < 0.77 → turned right
+
+Training entries whose pose ratio differs by more than 60% from the query are excluded from comparison. This ensures frontal test images match against frontal training images, and profiles match against profiles.
+
+#### Matching Steps
 
 1. Compute the descriptor for the detected face
-2. Compare against all descriptors in the training database
-3. Find the closest match below the threshold (default: **0.80**)
-4. Confidence score: `(1.0 - distance / threshold) * 100%`
-5. Detections with negative confidence are discarded
-6. If no match falls below the threshold, the face is labeled **unknown**
+2. Estimate the head pose ratio from the descriptor
+3. Filter training entries to those with compatible pose
+4. Compute the weighted Euclidean distance to each compatible entry
+5. Find the closest match below the threshold (default: **0.35**)
+6. Confidence score: `(1.0 - distance / threshold) × 100%`
+7. Detections with negative confidence are discarded
+8. If no match falls below the threshold, the face is labeled **unknown**
+
+Example confidence values:
+
+| Distance | Confidence |
+|---|---|
+| 0.00 | 100% (perfect match) |
+| 0.07 | 80% |
+| 0.175 | 50% |
+| 0.35 | 0% (at threshold — unknown) |
+| > 0.35 | negative (discarded) |
 
 ### Why Geometric Descriptors?
 
@@ -142,7 +187,7 @@ This compiles `main.c` (C) and the Objective-C modules (`face_detector.m`, `vide
 
 ### Train
 
-Add labeled face images to the training database. Multiple images per person (different angles) improve accuracy.
+Add labeled face images to the training database. Multiple images per person (different angles) improve accuracy. When multiple faces are detected in a training image (e.g., from multi-scale tiling), only the largest face is stored to avoid training on phantom detections.
 
 ```bash
 ./vision train alice photo1.jpg photo2.jpg
@@ -309,7 +354,7 @@ Show the exact build version:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `MATCH_THRESHOLD` | 0.80 | Euclidean distance threshold for recognition. Lower = stricter matching. |
+| `MATCH_THRESHOLD` | 0.35 | Weighted Euclidean distance threshold for recognition. Lower = stricter matching. |
 | `MAX_DESCRIPTOR_SIZE` | 80 | Buffer size for descriptor storage (currently 40 floats used). |
 | `MAX_TRAINING_ENTRIES` | 1000 | Maximum number of labeled face descriptors. |
 | `TILE_OVERLAP` | 0.50 | Overlap ratio between adjacent tiles in multi-scale detection. |

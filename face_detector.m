@@ -22,7 +22,7 @@
 
 #define MAX_DESCRIPTOR_SIZE 80    /* geometric ratio features          */
 #define MAX_TRAINING_ENTRIES 1000
-#define MATCH_THRESHOLD      0.80f /* Euclidean distance threshold     */
+#define MATCH_THRESHOLD      0.35f /* Euclidean distance threshold     */
 #define RECT_LINE_WIDTH      3.0
 #define LABEL_FONT_SIZE     18.0
 #define LABEL_PADDING        4.0
@@ -432,30 +432,139 @@ int extract_descriptor(VNFaceObservation *face, float *descriptor)
     return idx;
 }
 
+/*
+ * Per-dimension weights for face descriptor distance.
+ *
+ * Empirical analysis shows that region extent heights (eye height, lip
+ * height, brow height) are the strongest cross-subject discriminators,
+ * while several pairwise centroid distances mainly capture head-pose
+ * variation rather than identity.  Weights boost stable, discriminative
+ * dimensions and downweight pose-sensitive or degenerate ones.
+ *
+ * Dims  0-27: pairwise centroid distances  (28 features)
+ * Dims 28-39: region extents w/h           (12 features)
+ */
+static const float face_weights[40] = {
+    /* 0  dist(L-Eye, R-Eye)        — always 1.0 (IOD normaliser), useless */
+    0.0f,
+    /* 1  dist(L-Eye, Nose)         — moderate pose sensitivity     */  0.7f,
+    /* 2  dist(L-Eye, NoseCrest)    — moderate                      */  0.7f,
+    /* 3  dist(L-Eye, Lips)         — moderate                      */  0.7f,
+    /* 4  dist(L-Eye, L-Brow)       — weak                          */  0.5f,
+    /* 5  dist(L-Eye, R-Brow)       — poor                          */  0.3f,
+    /* 6  dist(L-Eye, Contour)      — pose-sensitive                */  0.3f,
+    /* 7  dist(R-Eye, Nose)         — moderate                      */  0.7f,
+    /* 8  dist(R-Eye, NoseCrest)    — moderate                      */  0.7f,
+    /* 9  dist(R-Eye, Lips)         — moderate                      */  0.5f,
+    /* 10 dist(R-Eye, L-Brow)       — weak                          */  0.5f,
+    /* 11 dist(R-Eye, R-Brow)       — poor                          */  0.3f,
+    /* 12 dist(R-Eye, Contour)      — pose-sensitive                */  0.3f,
+    /* 13 dist(Nose, NoseCrest)     — poor                          */  0.3f,
+    /* 14 dist(Nose, Lips)          — poor                          */  0.3f,
+    /* 15 dist(Nose, L-Brow)        — moderate                      */  0.7f,
+    /* 16 dist(Nose, R-Brow)        — moderate                      */  0.7f,
+    /* 17 dist(Nose, Contour)       — zero discrimination           */  0.1f,
+    /* 18 dist(NoseCrest, Lips)     — poor                          */  0.3f,
+    /* 19 dist(NoseCrest, L-Brow)   — moderate                      */  0.7f,
+    /* 20 dist(NoseCrest, R-Brow)   — moderate                      */  0.7f,
+    /* 21 dist(NoseCrest, Contour)  — zero discrimination           */  0.1f,
+    /* 22 dist(Lips, L-Brow)        — moderate                      */  0.7f,
+    /* 23 dist(Lips, R-Brow)        — weak                          */  0.5f,
+    /* 24 dist(Lips, Contour)       — poor                          */  0.3f,
+    /* 25 dist(L-Brow, R-Brow)      — good (brow spacing)           */  1.0f,
+    /* 26 dist(L-Brow, Contour)     — weak                          */  0.5f,
+    /* 27 dist(R-Brow, Contour)     — poor                          */  0.3f,
+    /* 28 L-Eye width               — poor                          */  0.3f,
+    /* 29 L-Eye height              — excellent discriminator        */  2.0f,
+    /* 30 R-Eye width               — poor                          */  0.3f,
+    /* 31 R-Eye height              — excellent discriminator        */  2.0f,
+    /* 32 Nose width                — poor                          */  0.3f,
+    /* 33 Nose height               — moderate                      */  0.7f,
+    /* 34 Lips width                — poor                          */  0.3f,
+    /* 35 Lips height               — excellent discriminator        */  2.0f,
+    /* 36 L-Brow width              — weak                          */  0.5f,
+    /* 37 L-Brow height             — good discriminator             */  1.5f,
+    /* 38 R-Brow width              — weak                          */  0.5f,
+    /* 39 R-Brow height             — good discriminator             */  1.5f,
+};
+
 static float compute_distance(const float *a, const float *b, int size)
 {
     float sum = 0.0f;
     for (int i = 0; i < size; i++) {
+        float w = (i < 40) ? face_weights[i] : 1.0f;
         float d = a[i] - b[i];
-        sum += d * d;
+        sum += w * d * d;
     }
     return sqrtf(sum);
 }
 
 /*
+ * Estimate head pose from descriptor.
+ *
+ * Uses the ratio of dist(L-Eye, Nose) to dist(R-Eye, Nose), which are
+ * descriptor dimensions 1 and 7 respectively.  A frontal face has a
+ * ratio near 1.0; a leftward-turned face > 1; a rightward-turned face < 1.
+ *
+ * Returns the pose ratio (dim1 / dim7), or 1.0 if either is near zero.
+ */
+static float estimate_pose_ratio(const float *desc, int size)
+{
+    if (size < 8) return 1.0f;
+    float d_left  = desc[1];  /* dist(L-Eye, Nose) */
+    float d_right = desc[7];  /* dist(R-Eye, Nose) */
+    if (d_right < 0.01f || d_left < 0.01f) return 1.0f;
+    return d_left / d_right;
+}
+
+/*
+ * Check whether two pose ratios are compatible.
+ * Both frontal, or both turned in the same direction by a similar amount.
+ */
+static int pose_compatible(float ratio_a, float ratio_b)
+{
+    /* Ratio of the two pose ratios — how similar are the head angles? */
+    float r = (ratio_a > ratio_b) ? ratio_a / ratio_b : ratio_b / ratio_a;
+    return r < 1.6f;  /* allow ~60% variation in L/R nose distance ratio */
+}
+
+/*
  * Find the training label with the smallest distance to the given
  * descriptor.  Returns NULL if no match is within MATCH_THRESHOLD.
+ *
+ * Pose-aware matching: only compares against training entries whose
+ * head pose (estimated from L-Eye/R-Eye to Nose distance ratio) is
+ * compatible with the query.  Falls back to all entries if no
+ * pose-compatible match is found.
  */
 const char *find_best_match(const float *descriptor, int size,
                             float *out_confidence)
 {
-    /* Find best distance per unique label */
+    float query_pose = estimate_pose_ratio(descriptor, size);
+
+    /* Find best distance per unique label (pose-compatible only) */
     typedef struct { const char *label; float dist; } LabelDist;
     LabelDist candidates[128];
     int num_cand = 0;
 
+    int any_compatible = 0;
     for (int i = 0; i < g_num_training; i++) {
         if (g_training[i].descriptor_size != size) continue;
+        float train_pose = estimate_pose_ratio(g_training[i].descriptor, size);
+        if (pose_compatible(query_pose, train_pose))
+            any_compatible = 1;
+    }
+
+    for (int i = 0; i < g_num_training; i++) {
+        if (g_training[i].descriptor_size != size) continue;
+
+        /* Skip pose-incompatible entries (unless no compatible ones exist) */
+        if (any_compatible) {
+            float train_pose = estimate_pose_ratio(g_training[i].descriptor, size);
+            if (!pose_compatible(query_pose, train_pose))
+                continue;
+        }
+
         float dist = compute_distance(descriptor,
                                       g_training[i].descriptor, size);
         int found = 0;
@@ -676,23 +785,43 @@ int face_train(const char *image_path, const char *label)
         int nfaces = detect_faces_multiscale(cgImage, dfaces,
                                               MAX_DETECTED_FACES,
                                               retainPool);
-        int stored = 0;
 
+        if (nfaces == 0) {
+            CGImageRelease(cgImage);
+            return 0;
+        }
+
+        /* Pick the largest face (biggest bounding-box area) to avoid
+         * training on phantom detections from multi-scale tiling. */
+        int best = 0;
+        float best_area = 0;
         for (int fi = 0; fi < nfaces; fi++) {
-            VNFaceObservation *face = dfaces[fi].face;
-            if (g_num_training >= MAX_TRAINING_ENTRIES) {
-                fprintf(stderr, "warning: training database full\n");
-                break;
+            float area = dfaces[fi].fullBB.size.width *
+                         dfaces[fi].fullBB.size.height;
+            if (area > best_area) {
+                best_area = area;
+                best = fi;
             }
+        }
+
+        if (nfaces > 1)
+            printf("  %d face(s) detected, using largest (%.0f%% of image)\n",
+                   nfaces, best_area * 100.0f);
+
+        int stored = 0;
+        VNFaceObservation *face = dfaces[best].face;
+        if (g_num_training >= MAX_TRAINING_ENTRIES) {
+            fprintf(stderr, "warning: training database full\n");
+        } else {
             TrainingEntry *entry = &g_training[g_num_training];
             int desc_size = extract_descriptor(face, entry->descriptor);
-            if (desc_size == 0) continue;
-
-            strncpy(entry->label, label, sizeof(entry->label) - 1);
-            entry->label[sizeof(entry->label) - 1] = '\0';
-            entry->descriptor_size = desc_size;
-            g_num_training++;
-            stored++;
+            if (desc_size > 0) {
+                strncpy(entry->label, label, sizeof(entry->label) - 1);
+                entry->label[sizeof(entry->label) - 1] = '\0';
+                entry->descriptor_size = desc_size;
+                g_num_training++;
+                stored++;
+            }
         }
 
         CGImageRelease(cgImage);

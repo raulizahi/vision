@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Minimum Face Resolution for Geometric Descriptor Recognition</title>
+<style>
+  @media print {
+    body { font-size: 11pt; }
+    .page-break { page-break-before: always; }
+    figure { page-break-inside: avoid; }
+    table { page-break-inside: avoid; }
+    tr { page-break-inside: avoid; }
+    thead { display: table-header-group; }
+    h2, h3, h4 { page-break-after: avoid; }
+    ul, ol { page-break-inside: avoid; }
+    .row-pair { page-break-inside: avoid; }
+  }
+  body {
+    font-family: "Times New Roman", Times, serif;
+    max-width: 850px;
+    margin: 40px auto;
+    padding: 0 20px;
+    line-height: 1.5;
+    color: #1a1a1a;
+  }
+  h1 {
+    font-size: 20pt;
+    text-align: center;
+    margin-bottom: 4px;
+  }
+  .authors {
+    text-align: center;
+    font-size: 12pt;
+    margin-bottom: 4px;
+  }
+  .affiliation {
+    text-align: center;
+    font-size: 10pt;
+    font-style: italic;
+    margin-bottom: 4px;
+  }
+  .date {
+    text-align: center;
+    font-size: 10pt;
+    margin-bottom: 30px;
+  }
+  h2 {
+    font-size: 14pt;
+    margin-top: 28px;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 4px;
+  }
+  h3 {
+    font-size: 12pt;
+    margin-top: 20px;
+  }
+  .abstract {
+    margin: 20px 40px;
+    font-size: 10pt;
+  }
+  .abstract strong {
+    font-size: 11pt;
+  }
+  table {
+    border-collapse: collapse;
+    margin: 16px auto;
+    font-size: 10pt;
+  }
+  th, td {
+    border: 1px solid #666;
+    padding: 6px 12px;
+    text-align: center;
+  }
+  th {
+    background: #f0f0f0;
+    font-weight: bold;
+  }
+  tr.misid {
+    background: #ffe0e0;
+  }
+  tr.degraded {
+    background: #fff8e0;
+  }
+  tr.reliable {
+    background: #e8f5e8;
+  }
+  figure {
+    margin: 20px 0;
+    text-align: center;
+  }
+  figcaption {
+    font-size: 9.5pt;
+    font-style: italic;
+    margin-top: 6px;
+    color: #444;
+  }
+  .image-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin: 16px 0;
+    align-items: end;
+  }
+  .image-grid .cell {
+    text-align: center;
+  }
+  .image-grid img {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #ccc;
+    image-rendering: pixelated;
+  }
+  .image-grid .caption {
+    font-size: 8.5pt;
+    color: #555;
+    margin-top: 4px;
+  }
+  .pair-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 12px 0;
+  }
+  .pair-grid img {
+    max-width: 100%;
+    border: 1px solid #ccc;
+  }
+  .pair-grid .caption {
+    font-size: 8.5pt;
+    color: #555;
+    text-align: center;
+    margin-top: 2px;
+  }
+  .row-pair {
+    display: flex;
+    gap: 16px;
+    margin: 16px 0;
+    align-items: flex-start;
+    justify-content: center;
+  }
+  .row-pair .cell {
+    text-align: center;
+    flex: 0 1 auto;
+  }
+  .row-pair img {
+    border: 1px solid #ccc;
+    image-rendering: pixelated;
+  }
+  .row-pair .caption {
+    font-size: 8.5pt;
+    color: #555;
+    margin-top: 4px;
+  }
+  p { margin: 10px 0; }
+  .ref-list { font-size: 10pt; }
+  .ref-list li { margin-bottom: 4px; }
+  .chart-bar {
+    display: inline-block;
+    height: 16px;
+    background: #4a90d9;
+    vertical-align: middle;
+    border-radius: 2px;
+  }
+  .chart-bar.fail {
+    background: #d94a4a;
+  }
+  .chart-bar.warn {
+    background: #d9a84a;
+  }
+</style>
+</head>
+<body>
+
+<h1>Minimum Face Resolution for Landmark-Based<br>Geometric Descriptor Recognition</h1>
+<div class="authors">Raul I. Lopez</div>
+<div class="affiliation">Seagull Work, Inc.</div>
+<div class="date">March 25, 2026</div>
+
+<div class="abstract">
+<strong>Abstract.</strong>
+We investigate the minimum face resolution required for reliable face recognition using a 40-dimensional geometric descriptor derived from Apple Vision framework landmarks. A single face image is progressively downscaled from 437&times;437 pixels to 11&times;11 pixels (face bounding box), and detection, landmark extraction, and recognition are evaluated at each scale. Results show that recognition remains reliable (&ge;80% confidence) down to a face bounding box of approximately 34&times;34 pixels. Below 28 pixels, confidence degrades significantly, and misidentification occurs at 16 pixels. Detection (face finding without recognition) persists down to 11&times;11 pixels. These findings establish practical resolution bounds for deployment of lightweight geometric face recognition systems.
+</div>
+
+<h2>1. Introduction</h2>
+
+<p>Face recognition systems must operate across a wide range of face sizes, from close-up portraits to distant subjects in surveillance or group photographs. While deep learning approaches typically require input images of 112&times;112 or larger, lightweight geometric descriptor methods that operate on facial landmark positions may have different resolution requirements.</p>
+
+<p>This paper presents an empirical study of the minimum face resolution required for a geometric descriptor-based recognition system built on Apple's Vision framework (<code>VNDetectFaceLandmarksRequest</code>, revision 3). The system extracts 82 facial landmark points, computes 8 region centroids, and produces a 40-dimensional descriptor based on inter-centroid distances and region extents, normalized by inter-ocular distance (IOD).</p>
+
+<p>The key question is: <em>at what face bounding box size do landmark positions become too noisy for the geometric ratios to remain discriminative?</em></p>
+
+<h2>2. Method</h2>
+
+<h3>2.1 Recognition Pipeline</h3>
+
+<p>The recognition pipeline consists of three stages:</p>
+<ol>
+  <li><strong>Detection:</strong> <code>VNDetectFaceLandmarksRequest</code> (rev. 3) with multi-scale tiled detection at 1&times;, 2&times;, and 4&times; magnification, plus vertical-flip detection for inverted faces.</li>
+  <li><strong>Descriptor extraction:</strong> 82 landmark points &rarr; 8 region centroids &rarr; 40-dimensional geometric descriptor (28 pairwise centroid distances + 12 region extents), normalized by inter-ocular distance.</li>
+  <li><strong>Matching:</strong> Euclidean distance in 40D descriptor space against a training database, with a threshold of 0.80 and confidence computed as <code>(1 &minus; distance/threshold) &times; 100%</code>.</li>
+</ol>
+
+<h3>2.2 Experimental Design</h3>
+
+<p>A single high-resolution portrait photograph (2316&times;3088 pixels) of a known subject ("raul") was used as the source image. The image was first cropped to a 1158&times;1544 region centered on the face, then progressively downscaled using bicubic interpolation (via macOS <code>sips</code>) to 11 target sizes ranging from 800 to 20 pixels on the longest edge.</p>
+
+<p>At each scale, the full recognition pipeline was executed. For each detected face, we recorded:</p>
+<ul>
+  <li>Image dimensions (pixels)</li>
+  <li>Face bounding box dimensions (pixels), as reported by Vision</li>
+  <li>Predicted identity label</li>
+  <li>Confidence score (%)</li>
+</ul>
+
+<p>The training database contained descriptors for two subjects: "raul" (the test subject) and "wendi" (a different person), trained from multiple images at various angles.</p>
+
+<div style="page-break-inside: avoid;">
+<h3>2.3 Test Images</h3>
+
+<figure>
+  <div class="image-grid">
+    <div class="cell">
+      <img src="face_800.png" style="width:110px;">
+      <div class="caption">800px</div>
+    </div>
+    <div class="cell">
+      <img src="face_400.png" style="width:100px;">
+      <div class="caption">400px</div>
+    </div>
+    <div class="cell">
+      <img src="face_200.png" style="width:90px;">
+      <div class="caption">200px</div>
+    </div>
+    <div class="cell">
+      <img src="face_150.png" style="width:80px;">
+      <div class="caption">150px</div>
+    </div>
+    <div class="cell">
+      <img src="face_100.png" style="width:70px;">
+      <div class="caption">100px</div>
+    </div>
+    <div class="cell">
+      <img src="face_80.png" style="width:60px;">
+      <div class="caption">80px</div>
+    </div>
+    <div class="cell">
+      <img src="face_60.png" style="width:50px;">
+      <div class="caption">60px</div>
+    </div>
+    <div class="cell">
+      <img src="face_50.png" style="width:45px;">
+      <div class="caption">50px</div>
+    </div>
+    <div class="cell">
+      <img src="face_40.png" style="width:40px;">
+      <div class="caption">40px</div>
+    </div>
+    <div class="cell">
+      <img src="face_30.png" style="width:35px;">
+      <div class="caption">30px</div>
+    </div>
+    <div class="cell">
+      <img src="face_20.png" style="width:30px;">
+      <div class="caption">20px</div>
+    </div>
+  </div>
+  <figcaption>Figure 1. Input images at each test resolution (longest edge labeled). Images are displayed at proportional sizes to convey relative scale. The source is a cropped portrait progressively downscaled via bicubic interpolation.</figcaption>
+</figure>
+</div>
+
+<h2>3. Results</h2>
+
+<h3>3.1 Detection and Recognition Accuracy</h3>
+
+<div style="page-break-inside: avoid;">
+<table>
+  <thead>
+    <tr>
+      <th>Image Size (px)</th>
+      <th>Face BBox (px)</th>
+      <th>Total Detections</th>
+      <th>False Positives</th>
+      <th>Best Match</th>
+      <th>Confidence</th>
+      <th>Correct?</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="reliable">
+      <td>600 &times; 800</td>
+      <td>437 &times; 437</td>
+      <td>4</td>
+      <td style="color:#c04040; font-weight:bold;">3</td>
+      <td>raul</td>
+      <td>93.9%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="reliable">
+      <td>300 &times; 400</td>
+      <td>224 &times; 224</td>
+      <td>6</td>
+      <td style="color:#c04040; font-weight:bold;">5</td>
+      <td>raul</td>
+      <td>89.7%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="reliable">
+      <td>150 &times; 200</td>
+      <td>109 &times; 109</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>83.9%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="reliable">
+      <td>112 &times; 150</td>
+      <td>85 &times; 85</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>83.1%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="reliable">
+      <td>75 &times; 100</td>
+      <td>54 &times; 54</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>79.9%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="reliable">
+      <td>60 &times; 80</td>
+      <td>46 &times; 46</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>79.6%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="reliable">
+      <td>45 &times; 60</td>
+      <td>34 &times; 34</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>80.3%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="degraded">
+      <td>37 &times; 50</td>
+      <td>28 &times; 28</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>67.7%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="degraded">
+      <td>30 &times; 40</td>
+      <td>23 &times; 23</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>66.9%</td>
+      <td>&#10004;</td>
+    </tr>
+    <tr class="misid">
+      <td>22 &times; 30</td>
+      <td>16 &times; 16</td>
+      <td>1</td>
+      <td>0</td>
+      <td><strong>wendi</strong></td>
+      <td>48.1%</td>
+      <td>&#10008;</td>
+    </tr>
+    <tr class="degraded">
+      <td>15 &times; 20</td>
+      <td>11 &times; 11</td>
+      <td>1</td>
+      <td>0</td>
+      <td>raul</td>
+      <td>41.8%</td>
+      <td>&#10004;*</td>
+    </tr>
+  </tbody>
+</table>
+<p style="font-size:9pt; text-align:center; margin-top:-8px;">
+  Table 1. Detection and recognition results at each resolution. Face BBox is the bounding box reported by Vision. Color key:
+  <span style="color:green;">&#9632;</span> Reliable (&ge;80%)&ensp;
+  <span style="color:#c0a020;">&#9632;</span> Degraded (40&ndash;79%)&ensp;
+  <span style="color:#c04040;">&#9632;</span> Misidentified.&ensp;
+  *Correct label but confidence too low for practical use.
+</p>
+</div>
+
+<h3>3.2 Confidence vs. Face Size</h3>
+
+<div style="page-break-inside: avoid;">
+<table>
+  <thead>
+    <tr><th>Face Width (px)</th><th>Confidence</th><th style="text-align:left;">Distribution</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>437</td><td>93.9%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="282" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>224</td><td>89.7%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="269" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>109</td><td>83.9%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="252" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>85</td><td>83.1%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="249" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>54</td><td>79.9%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="240" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>46</td><td>79.6%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="239" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>34</td><td>80.3%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="241" height="12" fill="#4a90d9" rx="2"/></svg></td></tr>
+    <tr><td>28</td><td>67.7%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="203" height="12" fill="#d9a84a" rx="2"/></svg></td></tr>
+    <tr><td>23</td><td>66.9%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="201" height="12" fill="#d9a84a" rx="2"/></svg></td></tr>
+    <tr><td>16</td><td>48.1%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="144" height="12" fill="#d94a4a" rx="2"/></svg></td></tr>
+    <tr><td>11</td><td>41.8%</td><td style="text-align:left;"><svg width="300" height="16"><rect x="0" y="2" width="125" height="12" fill="#d9a84a" rx="2"/></svg></td></tr>
+  </tbody>
+</table>
+<p style="font-size:9pt; text-align:center; margin-top:-8px;">
+  Table 2. Confidence score (best match) as a function of face bounding box width. Blue = correct identification, orange = correct but degraded, red = misidentified.
+</p>
+</div>
+
+<h3>3.3 Landmark Quality at Each Scale</h3>
+
+<p>The following figure pairs show the annotated detection output (left) and the landmark overlay (right) at each resolution, illustrating how landmark placement degrades as resolution decreases.</p>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">437px face &mdash; 93.9% confidence</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_800_out.png" style="height:200px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_800_out_landmarks.png" style="height:200px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">224px face &mdash; 89.7% confidence</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_400_out.png" style="height:180px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_400_out_landmarks.png" style="height:180px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">109px face &mdash; 83.9% confidence</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_200_out.png" style="height:160px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_200_out_landmarks.png" style="height:160px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">54px face &mdash; 79.9% confidence</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_100_out.png" style="height:140px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_100_out_landmarks.png" style="height:140px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">34px face &mdash; 80.3% confidence (minimum reliable)</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_60_out.png" style="height:120px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_60_out_landmarks.png" style="height:120px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<div class="page-break"></div>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">28px face &mdash; 67.7% confidence (degraded)</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_50_out.png" style="height:110px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_50_out_landmarks.png" style="height:110px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">23px face &mdash; 66.9% confidence (degraded)</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_40_out.png" style="height:100px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_40_out_landmarks.png" style="height:100px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">16px face &mdash; 48.1% confidence (MISIDENTIFIED)</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_30_out.png" style="height:90px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_30_out_landmarks.png" style="height:90px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<figure>
+  <h4 style="margin:8px 0 4px; font-size:10pt;">11px face &mdash; 41.8% confidence (unreliable)</h4>
+  <div class="row-pair">
+    <div class="cell"><img src="face_20_out.png" style="height:80px;"><div class="caption">Detection</div></div>
+    <div class="cell"><img src="face_20_out_landmarks.png" style="height:80px;"><div class="caption">Landmarks</div></div>
+  </div>
+</figure>
+
+<h2>4. Analysis</h2>
+
+<h3>4.1 Resolution Zones</h3>
+
+<div style="page-break-inside: avoid;">
+<p>The results reveal three distinct operating zones:</p>
+
+<table>
+  <thead>
+    <tr><th>Zone</th><th>Face BBox Width</th><th>Confidence Range</th><th>Behavior</th></tr>
+  </thead>
+  <tbody>
+    <tr class="reliable"><td><strong>Reliable</strong></td><td>&ge; 34 px</td><td>80&ndash;94%</td><td>Correct identification with high confidence. Landmark positions are precise enough for geometric ratios to be discriminative.</td></tr>
+    <tr class="degraded"><td><strong>Degraded</strong></td><td>23&ndash;28 px</td><td>67&ndash;68%</td><td>Correct identification but with reduced confidence. Landmark noise increases inter-centroid distance variance.</td></tr>
+    <tr class="misid"><td><strong>Unreliable</strong></td><td>&le; 16 px</td><td>42&ndash;48%</td><td>Misidentification or low-confidence guesses. Landmark positions are dominated by quantization noise.</td></tr>
+  </tbody>
+</table>
+<p style="font-size:9pt; text-align:center; margin-top:-8px;">
+  Table 3. Three resolution zones identified from the experimental results, with corresponding confidence ranges and observed behavior.
+</p>
+</div>
+
+<h3>4.2 Confidence Plateau</h3>
+
+<p>A notable finding is the confidence plateau between 34px and 54px face width, where confidence remains essentially flat at ~80%. This suggests that the IOD-normalized geometric descriptor is remarkably stable across a 1.6&times; scale range. The descriptor's reliance on <em>ratios</em> between region centroids rather than absolute positions provides inherent robustness to moderate landmark jitter.</p>
+
+<p>The sharp transition between 34px (80.3%) and 28px (67.7%) represents the point where landmark quantization noise exceeds the discriminative margin between the two training subjects. At 34px, with 82 landmarks distributed across the face, each landmark has approximately 0.4 pixels of space &mdash; near the limit of subpixel precision.</p>
+
+<h3>4.3 Detection vs. Recognition</h3>
+
+<p>Apple's Vision framework continues to detect faces and extract landmarks down to 11&times;11 pixels, demonstrating that the underlying neural face detector is far more resilient to low resolution than the geometric descriptor that depends on precise landmark positions. This gap highlights an important architectural consideration: <strong>detection capability exceeds recognition capability by approximately 3&times; in minimum resolution.</strong></p>
+
+<h3>4.4 Implications for Multi-Scale Detection</h3>
+
+<p>The system's multi-scale tiled detection (running at 1&times;, 2&times;, and 4&times; magnification) provides an effective mechanism for recognizing small faces in large images. A face occupying only 34 pixels in a 4000-pixel-wide image would be magnified to 136 pixels in the 4&times; pass, well within the reliable recognition zone. This means the practical minimum <em>subject</em> size in a full-resolution image is considerably smaller than the minimum <em>face bounding box</em> size reported here.</p>
+
+<h3>4.5 False Positives from Multi-Scale Tiling</h3>
+
+<p>An unexpected finding is that the multi-scale tiled detection introduces <strong>false positive detections at higher resolutions</strong>. At 600&times;800 pixels, the system reported 4 face detections (3 false positives), and at 300&times;400 pixels, it reported 6 detections (5 false positives). At 200px and below, only the single true face was detected.</p>
+
+<p>This is a direct consequence of the tiling strategy. The 2&times; and 4&times; passes subdivide the image into overlapping tiles and magnify each tile before running Vision's face detector. When the source image is already high resolution, these magnified tiles can present textured regions &mdash; hair, clothing folds, background patterns &mdash; at a scale where the neural detector hallucinates face-like structures. The IoU-based deduplication (threshold 0.30) eliminates overlapping detections of the <em>same</em> face across tiles, but spatially distinct false positives in different tiles survive deduplication.</p>
+
+<p>The false positives were filtered in the recognition stage: all phantom detections produced negative confidence scores (e.g., &minus;26%, &minus;157%, &minus;698%) and were discarded before display. This demonstrates that the geometric descriptor acts as an effective <strong>second-stage filter</strong> &mdash; even when the detector hallucinates a face, the landmark geometry is sufficiently abnormal that the descriptor distance far exceeds the match threshold.</p>
+
+<div style="page-break-inside: avoid;">
+<table>
+  <thead>
+    <tr><th>Image Size (px)</th><th>Total Detections</th><th>True Positives</th><th>False Positives</th><th>FP Confidence Range</th></tr>
+  </thead>
+  <tbody>
+    <tr class="misid"><td>600 &times; 800</td><td>4</td><td>1</td><td>3</td><td>&minus;26% to &minus;698%</td></tr>
+    <tr class="misid"><td>300 &times; 400</td><td>6</td><td>2</td><td>4</td><td>&minus;67% to &minus;966%</td></tr>
+    <tr class="reliable"><td>150 &times; 200</td><td>1</td><td>1</td><td>0</td><td>&mdash;</td></tr>
+    <tr class="reliable"><td>&le; 150</td><td>1</td><td>1</td><td>0</td><td>&mdash;</td></tr>
+  </tbody>
+</table>
+<p style="font-size:9pt; text-align:center; margin-top:-8px;">
+  Table 4. False positive detections by image size. All false positives were eliminated by negative confidence filtering in the recognition stage.
+</p>
+</div>
+
+<p>This trade-off is inherent to multi-scale tiling: the same mechanism that enables detection of small faces in large images also increases the false positive rate on high-resolution inputs. Potential mitigations include:</p>
+<ul>
+  <li><strong>Adaptive tiling:</strong> Skip the 4&times; (and possibly 2&times;) pass when the image is already small enough that faces would be directly detectable at 1&times;.</li>
+  <li><strong>Minimum face size filter:</strong> Discard detections where the face bounding box in the magnified tile is below the reliable recognition threshold (34px).</li>
+  <li><strong>Landmark confidence filter:</strong> Require a minimum average landmark confidence score from Vision, which tends to be lower for hallucinated faces.</li>
+</ul>
+
+<p>In the current system, the negative-confidence filtering already eliminates all false positives observed in this experiment. However, with a larger training database containing more subjects, the descriptor space becomes denser, and phantom detections could potentially match a real subject by chance. Adaptive tiling would provide a more robust defense.</p>
+
+<h2>5. Limitations</h2>
+
+<ul>
+  <li><strong>Single subject:</strong> The experiment used one subject with only two identities in the training database. With more subjects in the database, the discriminative threshold may be reached at a larger face size.</li>
+  <li><strong>Frontal pose only:</strong> The source image was a near-frontal portrait. Head rotation would likely increase the minimum resolution, as rotated landmarks shift from their canonical positions.</li>
+  <li><strong>Bicubic downscaling:</strong> Progressive downscaling via bicubic interpolation produces different artifacts than optical blur from distance or motion. Real-world low-resolution faces may behave differently.</li>
+  <li><strong>Single image per scale:</strong> No statistical averaging was performed. Multiple source images would yield confidence intervals.</li>
+</ul>
+
+<h2>6. Conclusions</h2>
+
+<p>For a 40-dimensional geometric descriptor based on Apple Vision framework landmarks:</p>
+<ul>
+  <li><strong>34&times;34 pixels</strong> (face bounding box) is the minimum for reliable recognition (&ge;80% confidence)</li>
+  <li><strong>23&ndash;28 pixels</strong> produces degraded but correct results (~67% confidence)</li>
+  <li><strong>Below 16 pixels</strong>, recognition is unreliable and misidentification occurs</li>
+  <li><strong>Detection</strong> persists down to approximately 11&times;11 pixels</li>
+</ul>
+
+<p>The geometric descriptor's IOD normalization provides a broad plateau of stable performance from 437px down to 34px &mdash; a 13:1 scale range &mdash; before degrading rapidly. This makes it suitable for most practical scenarios where faces occupy at least ~35 pixels, and the multi-scale tiled detection extends this further for large images.</p>
+
+<h2>References</h2>
+<ol class="ref-list">
+  <li>Apple Inc. "VNDetectFaceLandmarksRequest." <em>Apple Developer Documentation</em>, 2024. <a href="https://developer.apple.com/documentation/vision/vndetectfacelandmarksrequest">developer.apple.com/documentation/vision/vndetectfacelandmarksrequest</a></li>
+  <li>Apple Inc. "VNFaceObservation." <em>Apple Developer Documentation</em>, 2024. <a href="https://developer.apple.com/documentation/vision/vnfaceobservation">developer.apple.com/documentation/vision/vnfaceobservation</a></li>
+  <li>Apple Inc. "VNFaceLandmarks2D." <em>Apple Developer Documentation</em>, 2024. <a href="https://developer.apple.com/documentation/vision/vnfacelandmarks2d">developer.apple.com/documentation/vision/vnfacelandmarks2d</a></li>
+  <li>Apple Inc. "VNDetectHumanBodyPoseRequest." <em>Apple Developer Documentation</em>, 2024. <a href="https://developer.apple.com/documentation/vision/vndetecthumanbodyposerequest">developer.apple.com/documentation/vision/vndetecthumanbodyposerequest</a></li>
+  <li>Apple Inc. "Vision Framework." <em>Apple Developer Documentation</em>, 2024. <a href="https://developer.apple.com/documentation/vision">developer.apple.com/documentation/vision</a></li>
+  <li>Lopez, R.I. "Vision &mdash; Face Detection, Recognition, Body Pose & Gait Recognition." Project repository, 2026. <a href="https://github.com/raulizahi/vision">github.com/raulizahi/vision</a></li>
+</ol>
+
+<hr style="margin-top:40px;">
+<p style="font-size:8.5pt; color:#888; text-align:center;">
+  Experiment conducted March 25, 2026. Source code available in the <code>vision</code> repository, data available by request to [ vision at cgull.work ].
+  All images generated by <code>./vision detect</code>.
+</p>
+
+</body>
+</html>
